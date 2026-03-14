@@ -1,0 +1,10 @@
+# Dev overrides — extends docker-compose.yml
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  redis:
+    command: redis-server --loglevel verbose
+
+  postgres:
+    environment:
+      POSTGRES_LOG_STATEMENT: all
+    command: postgres -c log_statement=all -c log_min_duration_statement=0
