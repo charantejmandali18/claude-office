@@ -6,51 +6,188 @@ import { voiceConfig } from '@/lib/voice-config';
 interface UseVoiceOptions {
   onTranscript: (text: string, isFinal: boolean) => void;
   onError: (error: string) => void;
-  sampleRate?: number;
   silenceMs?: number;
 }
 
+/**
+ * Voice input hook using MediaRecorder + server-side Deepgram proxy.
+ *
+ * Records audio via MediaRecorder, monitors volume for silence detection,
+ * and sends completed audio chunks to /api/voice/stt for transcription.
+ */
 export function useVoice({
   onTranscript,
   onError,
-  sampleRate = voiceConfig.sampleRate,
   silenceMs = voiceConfig.silenceMs,
 }: UseVoiceOptions) {
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const wsRef = useRef<WebSocket | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const bufferRef = useRef<string>('');
+  const chunksRef = useRef<Blob[]>([]);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const rafRef = useRef<number | null>(null);
   const callbacksRef = useRef({ onTranscript, onError });
+  const isListeningRef = useRef(false);
 
-  // Keep callbacks fresh without causing re-renders
   useEffect(() => {
     callbacksRef.current = { onTranscript, onError };
   }, [onTranscript, onError]);
 
+  const sendAudioForTranscription = useCallback(async (blob: Blob) => {
+    if (blob.size < 5000) return; // skip tiny/silent clips that Deepgram can't decode
+
+    callbacksRef.current.onTranscript('Processing...', false);
+
+    try {
+      const resp = await fetch('/api/voice/stt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/webm' },
+        body: blob,
+      });
+
+      if (!resp.ok) {
+        console.error('STT proxy error:', resp.status);
+        return;
+      }
+
+      const { transcript } = await resp.json();
+      if (transcript && transcript.trim()) {
+        callbacksRef.current.onTranscript(transcript.trim(), true);
+      } else {
+        callbacksRef.current.onTranscript('', false);
+      }
+    } catch (err) {
+      console.error('STT fetch error:', err);
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    if (recorderRef.current && recorderRef.current.state === 'recording') {
+      recorderRef.current.stop();
+    }
+  }, []);
+
+  const startRecording = useCallback(() => {
+    const stream = streamRef.current;
+    if (!stream || !isListeningRef.current) return;
+
+    chunksRef.current = [];
+
+    const recorder = new MediaRecorder(stream, {
+      mimeType: 'audio/webm;codecs=opus',
+    });
+    recorderRef.current = recorder;
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        chunksRef.current.push(e.data);
+      }
+    };
+
+    recorder.onstop = async () => {
+      const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+      chunksRef.current = [];
+
+      if (blob.size > 5000) {
+        await sendAudioForTranscription(blob);
+      }
+
+      // Auto-restart recording if still in voice mode
+      if (isListeningRef.current && streamRef.current) {
+        startRecording();
+      }
+    };
+
+    recorder.start(250); // collect chunks every 250ms
+
+    // Silence detection via AnalyserNode
+    const analyser = analyserRef.current;
+    if (analyser) {
+      const dataArray = new Uint8Array(analyser.fftSize);
+      let speaking = false;
+
+      const checkVolume = () => {
+        if (!isListeningRef.current) return;
+
+        analyser.getByteTimeDomainData(dataArray);
+
+        // Calculate RMS volume
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const v = (dataArray[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / dataArray.length);
+        const isSpeakingNow = rms > 0.02; // threshold
+
+        if (isSpeakingNow) {
+          speaking = true;
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = null;
+          }
+        } else if (speaking && !silenceTimerRef.current) {
+          // Silence after speech — start timer
+          silenceTimerRef.current = setTimeout(() => {
+            speaking = false;
+            silenceTimerRef.current = null;
+            // Stop recording to trigger transcription
+            stopRecording();
+          }, silenceMs);
+        }
+
+        rafRef.current = requestAnimationFrame(checkVolume);
+      };
+
+      rafRef.current = requestAnimationFrame(checkVolume);
+    }
+  }, [silenceMs, sendAudioForTranscription, stopRecording]);
+
   const stop = useCallback(() => {
+    isListeningRef.current = false;
+
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
       recorderRef.current.stop();
     }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    analyserRef.current = null;
     recorderRef.current = null;
-    bufferRef.current = '';
+    chunksRef.current = [];
     setIsListening(false);
   }, []);
 
   const start = useCallback(async () => {
     setError(null);
 
-    // 1. Get mic permission
+    // Get mic permission
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -62,86 +199,32 @@ export function useVoice({
     }
     streamRef.current = stream;
 
-    // 2. Open Deepgram WebSocket
-    const params = new URLSearchParams({
-      token: voiceConfig.deepgramApiKey,
-      model: 'nova-2',
-      punctuate: 'true',
-      utterance_end_ms: String(silenceMs),
-      encoding: 'opus',
-      sample_rate: String(sampleRate),
-    });
+    // Set up audio analysis for silence detection
+    const audioCtx = new AudioContext();
+    audioCtxRef.current = audioCtx;
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    analyserRef.current = analyser;
 
-    const ws = new WebSocket(
-      `wss://api.deepgram.com/v1/listen?${params.toString()}`,
-    );
-    wsRef.current = ws;
+    isListeningRef.current = true;
+    setIsListening(true);
 
-    ws.onopen = () => {
-      // 3. Start MediaRecorder once WebSocket is open
-      const recorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-      });
-      recorderRef.current = recorder;
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-          ws.send(e.data);
-        }
-      };
-
-      recorder.start(250); // send chunks every 250ms
-      setIsListening(true);
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      // utterance_end event → fire final transcript
-      if (data.type === 'UtteranceEnd') {
-        if (bufferRef.current.trim()) {
-          callbacksRef.current.onTranscript(bufferRef.current.trim(), true);
-          bufferRef.current = '';
-        }
-        return;
-      }
-
-      // Transcript event
-      const transcript = data.channel?.alternatives?.[0]?.transcript;
-      if (!transcript) return;
-
-      if (data.is_final) {
-        bufferRef.current += (bufferRef.current ? ' ' : '') + transcript;
-        // Show accumulated text as interim for live display
-        callbacksRef.current.onTranscript(bufferRef.current, false);
-      } else {
-        // Interim: show buffer + current partial
-        const preview = bufferRef.current
-          ? bufferRef.current + ' ' + transcript
-          : transcript;
-        callbacksRef.current.onTranscript(preview, false);
-      }
-    };
-
-    ws.onerror = () => {
-      const msg = 'Voice connection error';
-      setError(msg);
-      callbacksRef.current.onError(msg);
-      stop();
-    };
-
-    ws.onclose = () => {
-      setIsListening(false);
-    };
-  }, [sampleRate, silenceMs, stop]);
+    // Start the first recording
+    startRecording();
+  }, [startRecording]);
 
   // Clean up on unmount
   useEffect(() => {
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      isListeningRef.current = false;
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (recorderRef.current && recorderRef.current.state !== 'inactive') {
         recorderRef.current.stop();
       }
+      if (audioCtxRef.current) audioCtxRef.current.close();
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
       }

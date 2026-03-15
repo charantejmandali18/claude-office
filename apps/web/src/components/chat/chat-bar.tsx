@@ -30,7 +30,7 @@ export function ChatBar({ onSend }: ChatBarProps) {
   const [isVoiceMode, setIsVoiceMode] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const [ttsAudioCtx, setTtsAudioCtx] = useState<AudioContext | null>(null);
   const lastMsgCountRef = useRef(messages.length);
 
   const voice = useVoice({
@@ -52,7 +52,7 @@ export function ChatBar({ onSend }: ChatBarProps) {
   });
 
   const tts = useTts({
-    audioContext: audioCtxRef.current,
+    audioContext: ttsAudioCtx,
   });
 
   // ── Mic toggle ────────────────────────────────────────────
@@ -60,20 +60,32 @@ export function ChatBar({ onSend }: ChatBarProps) {
     if (isVoiceMode) {
       voice.stop();
       tts.stop();
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close();
-        audioCtxRef.current = null;
+      if (ttsAudioCtx) {
+        ttsAudioCtx.close();
       }
+      setTtsAudioCtx(null);
       setIsVoiceMode(false);
       setVoiceTranscript('');
       setVoiceError(null);
     } else {
-      audioCtxRef.current = new AudioContext();
+      const ctx = new AudioContext();
+      setTtsAudioCtx(ctx);
       setIsVoiceMode(true);
       setVoiceError(null);
       await voice.start();
     }
-  }, [isVoiceMode, voice, tts]);
+  }, [isVoiceMode, voice, tts, ttsAudioCtx]);
+
+  // ── Welcome message when voice mode activates ─────────────
+  useEffect(() => {
+    if (isVoiceMode && ttsAudioCtx && voiceConfig.ttsEnabled) {
+      const selectedName = selectedAgent === 'cea'
+        ? 'the orchestrator'
+        : AGENT_ROLES.find((a) => a.id === selectedAgent)?.name ?? selectedAgent;
+      tts.speak(`Voice mode active. You're speaking with ${selectedName}. Go ahead.`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVoiceMode, ttsAudioCtx]);
 
   // ── Mic/TTS coordination — pause mic during playback ─────
   useEffect(() => {
