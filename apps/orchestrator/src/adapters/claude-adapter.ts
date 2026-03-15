@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKAssistantMessage, SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEvent, EventStream } from '@rigelhq/shared';
 import { generateRunId, generateEventId } from '@rigelhq/shared';
 import type { GatewayAdapter, AgentHandle, AgentEventCallback } from './adapter.js';
@@ -39,6 +40,8 @@ export class ClaudeAdapter implements GatewayAdapter {
         systemPrompt,
         allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
         permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        persistSession: false,
       },
     });
 
@@ -48,15 +51,21 @@ export class ClaudeAdapter implements GatewayAdapter {
       try {
         for await (const message of iter) {
           if (message.type === 'assistant') {
+            const assistantMsg = message as SDKAssistantMessage;
             emit('lifecycle', { phase: 'thinking' });
-            for (const block of message.message.content) {
+            for (const block of assistantMsg.message.content) {
               if (block.type === 'text') {
                 emit('assistant', { text: block.text });
               } else if (block.type === 'tool_use') {
                 emit('tool', { tool: block.name, phase: 'start', toolArgs: block.input as Record<string, unknown> });
+                emit('tool', { tool: block.name, phase: 'end' });
               }
             }
           } else if (message.type === 'result') {
+            const resultMsg = message as SDKResultMessage;
+            if (resultMsg.subtype !== 'success') {
+              emit('error', { error: `Agent run ended: ${resultMsg.subtype}` });
+            }
             emit('lifecycle', { phase: 'end' });
           }
         }

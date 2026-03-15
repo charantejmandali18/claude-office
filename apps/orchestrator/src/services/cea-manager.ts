@@ -75,14 +75,21 @@ export class CEAManager {
   }
 
   async sendMessage(content: string): Promise<void> {
-    if (!this.healthy || !this.handle) {
+    if (!this.healthy) {
       console.log('[CEA] Not healthy, queueing message');
       this.messageQueue.push(content);
       return;
     }
 
-    // For the mock adapter, spawn a new "CEA run" for each message
-    // The real Claude adapter would use session resumption
+    // Stop any running CEA before spawning a new run for this message
+    // Each user message gets a fresh CEA run with the full system prompt
+    try {
+      await this.agentManager.stopAgent(CEA_CONFIG_ID);
+    } catch {
+      // Agent may not be active — that's fine
+    }
+
+    console.log(`[CEA] Processing message: ${content.slice(0, 80)}...`);
     await this.agentManager.spawnAgent(
       CEA_CONFIG_ID,
       CEA_SYSTEM_PROMPT,
