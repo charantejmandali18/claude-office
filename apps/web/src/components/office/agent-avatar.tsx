@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { generateAvatar, type AvatarData } from '@/lib/avatar-generator';
 import type { AgentState } from '@/store/agent-store';
@@ -15,6 +16,18 @@ const STATUS_COLORS: Record<string, string> = {
   COLLABORATING: '#06b6d4',
   ERROR: '#ef4444',
 };
+
+// Movement offsets: when working, agent slides forward from desk
+function getMotionOffset(status: string): { dx: number; dy: number } {
+  switch (status) {
+    case 'THINKING':    return { dx: 0, dy: -8 };
+    case 'TOOL_CALLING': return { dx: 4, dy: -4 };
+    case 'SPEAKING':    return { dx: 0, dy: -12 };
+    case 'COLLABORATING': return { dx: 6, dy: -6 };
+    case 'ERROR':       return { dx: 0, dy: 2 };
+    default:            return { dx: 0, dy: 0 };
+  }
+}
 
 // ── Face sub-components ──────────────────────────────────────
 
@@ -136,111 +149,176 @@ export function AgentAvatar({ agent }: { agent: AgentState }) {
   const isWorking = ['THINKING', 'TOOL_CALLING', 'SPEAKING', 'COLLABORATING'].includes(agent.status);
   const clipId = `clip-${agent.configId}`;
 
+  const offset = useMemo(() => getMotionOffset(agent.status), [agent.status]);
+
+  // Idle agents get a subtle breathing animation; working agents get a bob
+  const bobAnimation = isWorking
+    ? { y: [0, -3, 0, 2, 0] }
+    : isActive
+      ? { y: [0, -1.5, 0] }
+      : {};
+  const bobTransition = isWorking
+    ? { duration: 2.5, repeat: Infinity, ease: 'easeInOut' as const }
+    : isActive
+      ? { duration: 4, repeat: Infinity, ease: 'easeInOut' as const }
+      : {};
+
   return (
-    <g transform={`translate(${agent.position.x}, ${agent.position.y})`}>
-      {/* Pulse glow */}
-      {isWorking && (
-        <motion.circle
-          cx={0} cy={0} r={R + 6}
-          fill="none" stroke={color} strokeWidth={2} opacity={0.25}
-          animate={{ r: [R + 6, R + 10, R + 6], opacity: [0.25, 0.08, 0.25] }}
-          transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-        />
-      )}
-
-      {/* Status ring */}
-      <circle
-        cx={0} cy={0} r={R + 2}
-        fill="none"
-        stroke={color}
-        strokeWidth={isWorking ? 3 : 2}
-        strokeDasharray={agent.status === 'TOOL_CALLING' ? '6 3' : undefined}
-        opacity={isActive ? 1 : 0.25}
-      />
-
-      {/* Avatar background */}
-      <circle cx={0} cy={0} r={R} fill="#1e293b" />
-
-      {/* Clipped face */}
-      <defs>
-        <clipPath id={clipId}>
-          <circle cx={0} cy={0} r={R} />
-        </clipPath>
-      </defs>
-      <g clipPath={`url(#${clipId})`}>
-        <AvatarFace data={avatar} cx={0} cy={0} r={R} />
-      </g>
-
-      {/* Thinking dots */}
-      {agent.status === 'THINKING' && (
-        <g transform="translate(16, -16)">
-          {[0, 1, 2].map((i) => (
-            <motion.circle
-              key={i}
-              cx={i * 5} cy={0} r={2}
-              fill={color}
-              animate={{ opacity: [0.3, 1, 0.3] }}
-              transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
-            />
-          ))}
-        </g>
-      )}
-
-      {/* Speaking indicator */}
-      {agent.status === 'SPEAKING' && (
-        <g transform="translate(16, -16)">
-          <motion.rect x={0} y={-4} width={2} height={8} rx={1} fill={color}
-            animate={{ scaleY: [0.4, 1, 0.4] }} transition={{ duration: 0.5, repeat: Infinity }} />
-          <motion.rect x={4} y={-3} width={2} height={6} rx={1} fill={color}
-            animate={{ scaleY: [1, 0.4, 1] }} transition={{ duration: 0.5, repeat: Infinity }} />
-          <motion.rect x={8} y={-4} width={2} height={8} rx={1} fill={color}
-            animate={{ scaleY: [0.6, 1, 0.6] }} transition={{ duration: 0.5, repeat: Infinity, delay: 0.15 }} />
-        </g>
-      )}
-
-      {/* Tool badge */}
-      {agent.currentTool && (
-        <g transform="translate(0, 32)">
-          <rect
-            x={-(agent.currentTool.length * 3.2 + 10) / 2} y={0}
-            width={agent.currentTool.length * 3.2 + 10} height={13}
-            rx={6.5} fill="#f97316"
+    <motion.g
+      initial={false}
+      animate={{
+        x: agent.position.x + offset.dx,
+        y: agent.position.y + offset.dy,
+      }}
+      transition={{
+        type: 'spring',
+        stiffness: 80,
+        damping: 18,
+        mass: 0.8,
+      }}
+    >
+      {/* Inner bobbing animation */}
+      <motion.g
+        animate={bobAnimation}
+        transition={bobTransition}
+      >
+        {/* Shadow on the ground */}
+        {isActive && (
+          <motion.ellipse
+            cx={0} cy={R + 8} rx={R - 2} ry={4}
+            fill="#000" opacity={0.15}
+            animate={isWorking ? { rx: [R - 2, R, R - 2], opacity: [0.15, 0.1, 0.15] } : {}}
+            transition={isWorking ? { duration: 2.5, repeat: Infinity, ease: 'easeInOut' } : {}}
           />
-          <text x={0} y={7.5} textAnchor="middle" dominantBaseline="central"
-            fill="#fff" fontSize={7} fontWeight="600" fontFamily="system-ui">
-            {agent.currentTool}
-          </text>
-        </g>
-      )}
+        )}
 
-      {/* Name label (glassmorphic pill) */}
-      <g transform={`translate(0, ${agent.currentTool ? 48 : 30})`}>
-        <rect
-          x={-34} y={0} width={68} height={16} rx={8}
-          fill="rgba(15, 23, 42, 0.85)"
-          stroke="rgba(51, 65, 85, 0.4)"
-          strokeWidth={0.5}
+        {/* Pulse glow */}
+        {isWorking && (
+          <motion.circle
+            cx={0} cy={0} r={R + 6}
+            fill="none" stroke={color} strokeWidth={2} opacity={0.25}
+            animate={{ r: [R + 6, R + 10, R + 6], opacity: [0.25, 0.08, 0.25] }}
+            transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+          />
+        )}
+
+        {/* Status ring */}
+        <circle
+          cx={0} cy={0} r={R + 2}
+          fill="none"
+          stroke={color}
+          strokeWidth={isWorking ? 3 : 2}
+          strokeDasharray={agent.status === 'TOOL_CALLING' ? '6 3' : undefined}
+          opacity={isActive ? 1 : 0.25}
         />
-        <text x={0} y={9} textAnchor="middle" dominantBaseline="central"
-          fill={isActive ? '#e2e8f0' : '#64748b'}
-          fontSize={7} fontWeight={isWorking ? 600 : 400} fontFamily="system-ui">
-          {agent.name.length > 14 ? agent.name.slice(0, 12) + '\u2026' : agent.name}
-        </text>
-      </g>
 
-      {/* Speech bubble */}
-      {agent.speechBubble && agent.status === 'SPEAKING' && (
-        <g transform="translate(0, -40)">
-          <rect x={-55} y={-10} width={110} height={18} rx={9}
-            fill="rgba(168, 85, 247, 0.92)" />
-          <polygon points="-4,8 4,8 0,14" fill="rgba(168, 85, 247, 0.92)" />
-          <text x={0} y={0} textAnchor="middle" dominantBaseline="central"
-            fill="#fff" fontSize={7} fontFamily="system-ui">
-            {agent.speechBubble.length > 26 ? agent.speechBubble.slice(0, 24) + '\u2026' : agent.speechBubble}
+        {/* Spinning dash for TOOL_CALLING */}
+        {agent.status === 'TOOL_CALLING' && (
+          <motion.circle
+            cx={0} cy={0} r={R + 2}
+            fill="none" stroke={color} strokeWidth={2}
+            strokeDasharray="6 3"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
+          />
+        )}
+
+        {/* Avatar background */}
+        <circle cx={0} cy={0} r={R} fill="#1e293b" />
+
+        {/* Clipped face */}
+        <defs>
+          <clipPath id={clipId}>
+            <circle cx={0} cy={0} r={R} />
+          </clipPath>
+        </defs>
+        <g clipPath={`url(#${clipId})`}>
+          <AvatarFace data={avatar} cx={0} cy={0} r={R} />
+        </g>
+
+        {/* Thinking dots */}
+        {agent.status === 'THINKING' && (
+          <g transform="translate(16, -16)">
+            {[0, 1, 2].map((i) => (
+              <motion.circle
+                key={i}
+                cx={i * 5} cy={0} r={2}
+                fill={color}
+                animate={{ opacity: [0.3, 1, 0.3], y: [0, -2, 0] }}
+                transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
+              />
+            ))}
+          </g>
+        )}
+
+        {/* Speaking indicator — waveform */}
+        {agent.status === 'SPEAKING' && (
+          <g transform="translate(16, -16)">
+            <motion.rect x={0} y={-4} width={2} height={8} rx={1} fill={color}
+              animate={{ scaleY: [0.4, 1, 0.4] }} transition={{ duration: 0.5, repeat: Infinity }} />
+            <motion.rect x={4} y={-3} width={2} height={6} rx={1} fill={color}
+              animate={{ scaleY: [1, 0.4, 1] }} transition={{ duration: 0.5, repeat: Infinity }} />
+            <motion.rect x={8} y={-4} width={2} height={8} rx={1} fill={color}
+              animate={{ scaleY: [0.6, 1, 0.6] }} transition={{ duration: 0.5, repeat: Infinity, delay: 0.15 }} />
+          </g>
+        )}
+
+        {/* Tool badge */}
+        {agent.currentTool && (
+          <motion.g
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+          >
+            <g transform="translate(0, 32)">
+              <rect
+                x={-(agent.currentTool.length * 3.2 + 10) / 2} y={0}
+                width={agent.currentTool.length * 3.2 + 10} height={13}
+                rx={6.5} fill="#f97316"
+              />
+              <text x={0} y={7.5} textAnchor="middle" dominantBaseline="central"
+                fill="#fff" fontSize={7} fontWeight="600" fontFamily="system-ui">
+                {agent.currentTool}
+              </text>
+            </g>
+          </motion.g>
+        )}
+
+        {/* Name label (glassmorphic pill) */}
+        <g transform={`translate(0, ${agent.currentTool ? 48 : 30})`}>
+          <rect
+            x={-34} y={0} width={68} height={16} rx={8}
+            fill="rgba(15, 23, 42, 0.85)"
+            stroke="rgba(51, 65, 85, 0.4)"
+            strokeWidth={0.5}
+          />
+          <text x={0} y={9} textAnchor="middle" dominantBaseline="central"
+            fill={isActive ? '#e2e8f0' : '#64748b'}
+            fontSize={7} fontWeight={isWorking ? 600 : 400} fontFamily="system-ui">
+            {agent.name.length > 14 ? agent.name.slice(0, 12) + '\u2026' : agent.name}
           </text>
         </g>
-      )}
-    </g>
+
+        {/* Speech bubble */}
+        {agent.speechBubble && agent.status === 'SPEAKING' && (
+          <motion.g
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ type: 'spring', stiffness: 150, damping: 12 }}
+          >
+            <g transform="translate(0, -40)">
+              <rect x={-55} y={-10} width={110} height={18} rx={9}
+                fill="rgba(168, 85, 247, 0.92)" />
+              <polygon points="-4,8 4,8 0,14" fill="rgba(168, 85, 247, 0.92)" />
+              <text x={0} y={0} textAnchor="middle" dominantBaseline="central"
+                fill="#fff" fontSize={7} fontFamily="system-ui">
+                {agent.speechBubble.length > 26 ? agent.speechBubble.slice(0, 24) + '\u2026' : agent.speechBubble}
+              </text>
+            </g>
+          </motion.g>
+        )}
+      </motion.g>
+    </motion.g>
   );
 }
 

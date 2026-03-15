@@ -5,7 +5,6 @@ import { useAgentStore, type AgentState } from '@/store/agent-store';
 import { AGENT_ROLES, AGENT_ROLE_MAP } from '@rigelhq/shared';
 import type { AgentEvent } from '@rigelhq/shared';
 import { SidebarAvatar } from '../office/agent-avatar';
-import { ChatPanel } from '../chat/chat-panel';
 
 // ── Icons ────────────────────────────────────────────────────
 
@@ -327,11 +326,7 @@ function EventTimeline() {
 
 // ── Main sidebar ─────────────────────────────────────────────
 
-interface SidebarProps {
-  onSend: (message: string, targetAgent?: string) => void;
-}
-
-export function Sidebar({ onSend }: SidebarProps) {
+export function Sidebar() {
   const agents = useAgentStore((s) => s.agents);
   const events = useAgentStore((s) => s.events);
 
@@ -362,12 +357,6 @@ export function Sidebar({ onSend }: SidebarProps) {
 
         <Section title="Activity" badge={events.length} defaultOpen={true}>
           <EventTimeline />
-        </Section>
-
-        <Section title="Chat" defaultOpen={true}>
-          <div className="h-[320px]">
-            <ChatPanel onSend={onSend} />
-          </div>
         </Section>
       </div>
     </div>
