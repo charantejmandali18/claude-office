@@ -1,6 +1,6 @@
 import type { AgentEvent } from '@rigelhq/shared';
 import { generateRunId, generateEventId } from '@rigelhq/shared';
-import type { GatewayAdapter, AgentHandle, AgentEventCallback } from './adapter.js';
+import type { GatewayAdapter, AgentHandle, AgentEventCallback, SpawnOptions } from './adapter.js';
 
 interface MockAgent {
   handle: AgentHandle;
@@ -28,6 +28,7 @@ export class MockAdapter implements GatewayAdapter {
     _systemPrompt: string,
     _taskPrompt: string,
     onEvent: AgentEventCallback,
+    _options?: SpawnOptions,
   ): Promise<AgentHandle> {
     const runId = generateRunId();
     const agent: MockAgent = {

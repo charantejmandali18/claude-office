@@ -13,115 +13,214 @@ const STATUS_COLORS: Record<string, string> = {
   ERROR: '#f85149',
 };
 
-const STATUS_DASH: Record<string, string> = {
-  TOOL_CALLING: '4 4',
+const STATUS_LABELS: Record<string, string> = {
+  THINKING: '💭',
+  TOOL_CALLING: '⚡',
+  SPEAKING: '💬',
+  ERROR: '⚠️',
 };
 
 export function AgentAvatar({ agent }: { agent: AgentState }) {
   const color = STATUS_COLORS[agent.status] ?? '#30363d';
-  const dash = STATUS_DASH[agent.status];
   const isActive = agent.status !== 'OFFLINE';
-  const isPulsing = ['THINKING', 'SPEAKING', 'COLLABORATING'].includes(agent.status);
+  const isWorking = ['THINKING', 'TOOL_CALLING', 'SPEAKING', 'COLLABORATING'].includes(agent.status);
 
   return (
     <g transform={`translate(${agent.position.x}, ${agent.position.y})`}>
-      {/* Status ring */}
-      <motion.circle
-        cx={0}
-        cy={0}
-        r={28}
-        fill="none"
-        stroke={color}
-        strokeWidth={isPulsing ? 3 : 2}
-        strokeDasharray={dash}
-        animate={isPulsing ? {
-          r: [28, 31, 28],
-          opacity: [1, 0.6, 1],
-        } : {}}
-        transition={isPulsing ? {
-          duration: 1.5,
-          repeat: Infinity,
-          ease: 'easeInOut',
-        } : {}}
-      />
+      {/* Workstation glow */}
+      {isWorking && (
+        <motion.ellipse
+          cx={0}
+          cy={8}
+          rx={38}
+          ry={26}
+          fill={color}
+          opacity={0.08}
+          animate={{ opacity: [0.05, 0.12, 0.05], rx: [38, 40, 38] }}
+          transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+        />
+      )}
 
-      {/* Background circle */}
-      <circle
-        cx={0}
-        cy={0}
-        r={24}
-        fill={isActive ? '#161b22' : '#0f1419'}
-        stroke="#30363d"
+      {/* Desk surface — isometric diamond */}
+      <polygon
+        points="0,-14 32,0 0,14 -32,0"
+        fill={isActive ? '#1c2128' : '#13171d'}
+        stroke={isActive ? '#2d333b' : '#1c2128'}
         strokeWidth={1}
       />
 
-      {/* Agent icon */}
+      {/* Monitor back (isometric) */}
+      <polygon
+        points="-10,-14 10,-14 10,-30 -10,-30"
+        fill="#21262d"
+        stroke="#30363d"
+        strokeWidth={0.5}
+      />
+
+      {/* Monitor screen */}
+      <rect
+        x={-8}
+        y={-28}
+        width={16}
+        height={12}
+        rx={1}
+        fill={isActive ? '#0d1117' : '#0a0e14'}
+        stroke={isWorking ? color : '#30363d'}
+        strokeWidth={isWorking ? 1 : 0.5}
+      />
+
+      {/* Screen content — shows activity */}
+      {isWorking && (
+        <g>
+          <motion.rect
+            x={-6}
+            y={-26}
+            width={12}
+            height={1.5}
+            rx={0.5}
+            fill={color}
+            opacity={0.6}
+            animate={{ opacity: [0.3, 0.7, 0.3] }}
+            transition={{ duration: 1.2, repeat: Infinity }}
+          />
+          <rect x={-6} y={-23} width={8} height={1} rx={0.5} fill="#30363d" opacity={0.4} />
+          <rect x={-6} y={-21} width={10} height={1} rx={0.5} fill="#30363d" opacity={0.3} />
+        </g>
+      )}
+
+      {/* Monitor stand */}
+      <line x1={0} y1={-14} x2={0} y2={-11} stroke="#30363d" strokeWidth={2} />
+
+      {/* Character — simplified sitting figure */}
+      <g transform="translate(0, -4)">
+        {/* Body */}
+        <ellipse
+          cx={0}
+          cy={2}
+          rx={7}
+          ry={5}
+          fill={isActive ? '#2d333b' : '#1c2128'}
+        />
+        {/* Head */}
+        <circle
+          cx={0}
+          cy={-6}
+          r={5}
+          fill={isActive ? '#2d333b' : '#1c2128'}
+          stroke={color}
+          strokeWidth={isWorking ? 1.5 : 0.5}
+        />
+        {/* Face icon */}
+        <text
+          x={0}
+          y={-5}
+          textAnchor="middle"
+          dominantBaseline="central"
+          fontSize={7}
+          style={{ userSelect: 'none' }}
+        >
+          {agent.icon}
+        </text>
+      </g>
+
+      {/* Chair back (behind character) */}
+      <path
+        d="M-8,8 Q0,2 8,8"
+        fill="none"
+        stroke="#21262d"
+        strokeWidth={2}
+      />
+
+      {/* Status indicator dot */}
+      <circle
+        cx={18}
+        cy={-28}
+        r={3}
+        fill={color}
+      />
+      {isWorking && (
+        <motion.circle
+          cx={18}
+          cy={-28}
+          r={3}
+          fill="none"
+          stroke={color}
+          strokeWidth={1}
+          animate={{ r: [3, 6, 3], opacity: [1, 0, 1] }}
+          transition={{ duration: 1.5, repeat: Infinity }}
+        />
+      )}
+
+      {/* Agent name plate */}
+      <rect
+        x={-28}
+        y={20}
+        width={56}
+        height={14}
+        rx={3}
+        fill="#161b22"
+        stroke={isActive ? '#2d333b' : '#1c2128'}
+        strokeWidth={0.5}
+      />
       <text
         x={0}
-        y={2}
+        y={28}
         textAnchor="middle"
         dominantBaseline="central"
-        fontSize={20}
-        style={{ userSelect: 'none' }}
+        fill={isActive ? '#8b949e' : '#484f58'}
+        fontSize={7}
+        fontFamily="system-ui, sans-serif"
+        fontWeight={isWorking ? 600 : 400}
       >
-        {agent.icon}
+        {agent.name.length > 14 ? agent.name.slice(0, 12) + '…' : agent.name}
       </text>
 
-      {/* Agent name */}
-      <text
-        x={0}
-        y={42}
-        textAnchor="middle"
-        fill="#8b949e"
-        fontSize={9}
-        fontFamily="system-ui, sans-serif"
-      >
-        {agent.name.length > 16 ? agent.name.slice(0, 14) + '…' : agent.name}
-      </text>
+      {/* Status emoji badge */}
+      {STATUS_LABELS[agent.status] && (
+        <text
+          x={-20}
+          y={-28}
+          fontSize={9}
+          style={{ userSelect: 'none' }}
+        >
+          {STATUS_LABELS[agent.status]}
+        </text>
+      )}
 
       {/* Tool badge */}
       {agent.currentTool && (
-        <g transform="translate(20, -20)">
-          <rect x={-2} y={-8} width={agent.currentTool.length * 5.5 + 8} height={16} rx={4} fill="#f0883e" />
-          <text x={2} y={1} fill="#0f1419" fontSize={8} fontWeight="bold" fontFamily="monospace" dominantBaseline="central">
+        <g transform="translate(22, -8)">
+          <rect x={0} y={-6} width={agent.currentTool.length * 4.5 + 8} height={12} rx={3} fill="#f0883e" opacity={0.9} />
+          <text x={4} y={1} fill="#0f1419" fontSize={7} fontWeight="bold" fontFamily="monospace" dominantBaseline="central">
             {agent.currentTool}
           </text>
         </g>
       )}
 
       {/* Speech bubble */}
-      {agent.speechBubble && (
-        <g transform="translate(0, -44)">
+      {agent.speechBubble && agent.status === 'SPEAKING' && (
+        <g transform="translate(0, -48)">
           <rect
-            x={-60}
-            y={-14}
-            width={120}
-            height={24}
-            rx={8}
+            x={-55}
+            y={-12}
+            width={110}
+            height={20}
+            rx={6}
             fill="#d2a8ff"
             opacity={0.9}
           />
-          {/* Pointer triangle */}
-          <polygon points="-4,10 4,10 0,16" fill="#d2a8ff" opacity={0.9} />
+          <polygon points="-3,8 3,8 0,13" fill="#d2a8ff" opacity={0.9} />
           <text
             x={0}
             y={-2}
             textAnchor="middle"
             dominantBaseline="central"
             fill="#0f1419"
-            fontSize={8}
+            fontSize={7}
             fontFamily="system-ui, sans-serif"
           >
-            {agent.speechBubble.length > 28 ? agent.speechBubble.slice(0, 26) + '…' : agent.speechBubble}
+            {agent.speechBubble.length > 26 ? agent.speechBubble.slice(0, 24) + '…' : agent.speechBubble}
           </text>
-        </g>
-      )}
-
-      {/* Error badge */}
-      {agent.status === 'ERROR' && (
-        <g transform="translate(20, 15)">
-          <circle cx={0} cy={0} r={8} fill="#f85149" />
-          <text x={0} y={1} textAnchor="middle" dominantBaseline="central" fill="white" fontSize={10} fontWeight="bold">!</text>
         </g>
       )}
     </g>

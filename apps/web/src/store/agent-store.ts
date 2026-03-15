@@ -42,6 +42,7 @@ export interface ChatMessage {
 interface AgentStore {
   agents: Map<string, AgentState>;
   messages: ChatMessage[];
+  events: AgentEvent[];
   connected: boolean;
 
   // Actions
@@ -49,6 +50,7 @@ interface AgentStore {
   handleEvent: (event: AgentEvent) => void;
   setConnected: (connected: boolean) => void;
   addMessage: (message: ChatMessage) => void;
+  addEvent: (event: AgentEvent) => void;
   updateAgentStatus: (configId: string, status: AgentStatus) => void;
 }
 
@@ -56,6 +58,7 @@ export const useAgentStore = create<AgentStore>()(
   immer((set) => ({
     agents: new Map(),
     messages: [],
+    events: [],
     connected: false,
 
     initAgents: () => {
@@ -94,6 +97,12 @@ export const useAgentStore = create<AgentStore>()(
 
     handleEvent: (event: AgentEvent) => {
       set((state) => {
+        // Push to activity feed (keep last 100)
+        state.events.push(event);
+        if (state.events.length > 100) {
+          state.events = state.events.slice(-100);
+        }
+
         const agent = state.agents.get(event.agentId);
         if (!agent) return;
 
@@ -145,6 +154,15 @@ export const useAgentStore = create<AgentStore>()(
         // Keep last 200 messages
         if (state.messages.length > 200) {
           state.messages = state.messages.slice(-200);
+        }
+      });
+    },
+
+    addEvent: (event) => {
+      set((state) => {
+        state.events.push(event);
+        if (state.events.length > 100) {
+          state.events = state.events.slice(-100);
         }
       });
     },

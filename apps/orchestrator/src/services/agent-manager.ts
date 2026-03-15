@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import type { AgentEvent, AgentStatus } from '@rigelhq/shared';
 import { AGENT_ROLE_MAP } from '@rigelhq/shared';
-import type { GatewayAdapter, AgentHandle } from '../adapters/adapter.js';
+import type { GatewayAdapter, AgentHandle, SpawnOptions } from '../adapters/adapter.js';
 import type { EventBus } from './event-bus.js';
 
 interface ActiveAgent {
@@ -17,6 +17,7 @@ export class AgentManager {
     configId: string;
     systemPrompt: string;
     taskPrompt: string;
+    options?: SpawnOptions;
     resolve: (handle: AgentHandle) => void;
     reject: (err: Error) => void;
   }> = [];
@@ -46,6 +47,7 @@ export class AgentManager {
     configId: string,
     systemPrompt: string,
     taskPrompt: string,
+    options?: SpawnOptions,
   ): Promise<AgentHandle> {
     // Check if already active
     if (this.active.has(configId)) {
@@ -55,23 +57,24 @@ export class AgentManager {
     // Check pool capacity
     if (this.active.size >= this.maxConcurrent) {
       return new Promise((resolve, reject) => {
-        this.queue.push({ configId, systemPrompt, taskPrompt, resolve, reject });
+        this.queue.push({ configId, systemPrompt, taskPrompt, options, resolve, reject });
       });
     }
 
-    return this.doSpawn(configId, systemPrompt, taskPrompt);
+    return this.doSpawn(configId, systemPrompt, taskPrompt, options);
   }
 
   private async doSpawn(
     configId: string,
     systemPrompt: string,
     taskPrompt: string,
+    options?: SpawnOptions,
   ): Promise<AgentHandle> {
     const onEvent = async (event: AgentEvent) => {
       await this.handleEvent(configId, event);
     };
 
-    const handle = await this.adapter.spawn(configId, systemPrompt, taskPrompt, onEvent);
+    const handle = await this.adapter.spawn(configId, systemPrompt, taskPrompt, onEvent, options);
 
     const activeAgent: ActiveAgent = {
       handle,
@@ -172,7 +175,7 @@ export class AgentManager {
 
     const next = this.queue.shift()!;
     try {
-      const handle = await this.doSpawn(next.configId, next.systemPrompt, next.taskPrompt);
+      const handle = await this.doSpawn(next.configId, next.systemPrompt, next.taskPrompt, next.options);
       next.resolve(handle);
     } catch (err) {
       next.reject(err instanceof Error ? err : new Error(String(err)));

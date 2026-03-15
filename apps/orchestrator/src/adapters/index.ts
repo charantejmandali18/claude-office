@@ -1,4 +1,4 @@
-export type { GatewayAdapter, AgentHandle, AgentEventCallback } from './adapter.js';
+export type { GatewayAdapter, AgentHandle, AgentEventCallback, SpawnOptions, SubagentDef } from './adapter.js';
 export { MockAdapter } from './mock-adapter.js';
 export { ClaudeAdapter } from './claude-adapter.js';
 
