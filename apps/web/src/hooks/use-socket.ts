@@ -3,14 +3,24 @@
 import { useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useAgentStore } from '@/store/agent-store';
-import type { AgentEvent } from '@rigelhq/shared';
+import type { AgentEvent, AgentStatus } from '@rigelhq/shared';
 import { AGENT_ROLE_MAP } from '@rigelhq/shared';
+import type { ActiveCollaboration } from '@/store/agent-store';
 
 const ORCHESTRATOR_URL = process.env.NEXT_PUBLIC_ORCHESTRATOR_URL ?? 'http://localhost:4000';
 
 export function useSocket() {
   const socketRef = useRef<Socket | null>(null);
-  const { handleEvent, setConnected, addMessage, initAgents } = useAgentStore();
+  const {
+    handleEvent,
+    handleCollaborationEvent,
+    handleMovementEvent,
+    handleCollaborationSnapshot,
+    setConnected,
+    addMessage,
+    initAgents,
+    updateAgentStatus,
+  } = useAgentStore();
 
   useEffect(() => {
     // Initialize agent positions on mount
@@ -54,8 +64,33 @@ export function useSocket() {
       }
     });
 
+    // Receive current agent statuses from DB (ensures UI is correct even if events have rotated out)
+    socket.on('agent:status-snapshot', (agents: Array<{ configId: string; status: string }>) => {
+      for (const { configId, status } of agents) {
+        updateAgentStatus(configId, status as AgentStatus);
+      }
+    });
+
+    // Receive active collaboration snapshot on connect (for page refresh mid-collaboration)
+    socket.on('collaboration:snapshot', (collabs: ActiveCollaboration[]) => {
+      handleCollaborationSnapshot(collabs);
+    });
+
     // Real-time agent events
     socket.on('agent:event', (event: AgentEvent) => {
+      // Route collaboration events to the dedicated handler
+      if (event.stream === 'collaboration' as string) {
+        handleCollaborationEvent(event);
+        return;
+      }
+
+      // Route movement events to the dedicated handler
+      if (event.stream === 'movement' as string) {
+        handleMovementEvent(event);
+        return;
+      }
+
+      // Default: standard event handling
       handleEvent(event);
 
       // Add assistant text to chat

@@ -4,6 +4,7 @@ import { useRef, useEffect, useState } from 'react';
 import { animate, stagger, spring } from 'animejs';
 import { generateAvatar, type AvatarData } from '@/lib/avatar-generator';
 import type { AgentState } from '@/store/agent-store';
+import { useAgentStore } from '@/store/agent-store';
 
 const R = 26; // avatar radius
 
@@ -145,6 +146,14 @@ export function AgentAvatar({ agent }: { agent: AgentState }) {
   const isActive = agent.status !== 'OFFLINE';
   const isWorking = ['THINKING', 'TOOL_CALLING', 'SPEAKING', 'COLLABORATING'].includes(agent.status);
   const clipId = `clip-${agent.configId}`;
+  const collabGlowId = `collab-glow-${agent.configId}`;
+
+  // Read collaboration color from the store (if this agent is in one)
+  const collabColor = useAgentStore((s) => {
+    if (!agent.collaborationId) return null;
+    const collab = s.collaborations.get(agent.collaborationId);
+    return collab?.status === 'active' ? collab.color : null;
+  });
 
   // Refs for animated elements
   const groupRef = useRef<SVGGElement>(null);
@@ -323,6 +332,27 @@ export function AgentAvatar({ agent }: { agent: AgentState }) {
           cx={0} cy={R + 10} rx={R - 2} ry={5}
           fill="#000" opacity={0}
         />
+
+        {/* Collaboration glow (subtle colored halo when in a collaboration) */}
+        {collabColor && (
+          <>
+            <defs>
+              <filter id={collabGlowId}>
+                <feGaussianBlur stdDeviation="4" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <circle
+              cx={0} cy={0} r={R + 5}
+              fill="none" stroke={collabColor} strokeWidth={2}
+              opacity={0.35}
+              filter={`url(#${collabGlowId})`}
+            />
+          </>
+        )}
 
         {/* Pulse glow ring */}
         <circle

@@ -2,6 +2,7 @@
 
 import { useAgentStore } from '@/store/agent-store';
 import { AgentAvatar } from './agent-avatar';
+import { CommunicationLines } from './communication-lines';
 
 // Helper: shorthand for var()
 const v = (name: string) => `var(--office-${name})`;
@@ -142,7 +143,7 @@ export function OfficeFloor() {
 
   return (
     <svg
-      viewBox="0 0 1200 700"
+      viewBox="0 -100 1200 800"
       className="w-full h-full"
       style={{ background: v('bg') }}
     >
@@ -173,7 +174,7 @@ export function OfficeFloor() {
       </defs>
 
       {/* ─── Layer 1: Base floor ─── */}
-      <rect width="1200" height="700" fill="url(#floor-tile)" />
+      <rect y="-100" width="1200" height="800" fill="url(#floor-tile)" />
 
       {/* ─── Layer 2: Building shell (outer walls) ─── */}
       <rect x={8} y={8} width={1184} height={684} rx={6}
@@ -181,6 +182,15 @@ export function OfficeFloor() {
       {/* Inner wall shadow */}
       <rect x={10} y={10} width={1180} height={680} rx={5}
         fill="none" style={{ stroke: v('wall-inner') }} strokeWidth={1} />
+
+      {/* ─── CEA Suite (top center, above the office) ─── */}
+      <rect x={480} y={-88} width={240} height={80} rx={8}
+        style={{ fill: v('zone-exec') }} opacity={0.35} />
+      <rect x={480} y={-88} width={240} height={3} rx={1.5}
+        fill="#8a6abf" opacity={0.5} />
+      <rect x={480} y={-88} width={240} height={80} rx={8}
+        fill="none" style={{ stroke: v('wall') }} strokeWidth={1.5} />
+      <ZoneLabel x={545} y={-70} label="CEA Suite" color="#8a6abf" />
 
       {/* ─── Layer 3: Zone backgrounds ─── */}
       {/* Executive Wing (top-left) */}
@@ -224,10 +234,12 @@ export function OfficeFloor() {
       <ZoneLabel x={CX + CW + 14} y={CY + CW + 24} label="Ops Center" color="#b07a40" />
 
       {/* ─── Layer 6: Furniture ─── */}
-      {/* Desks at each agent position */}
-      {agentList.map((agent) => (
+      {/* Desks at each agent position (skip CEA — has special suite) */}
+      {agentList.filter((a) => a.zone !== 'ceo-suite').map((agent) => (
         <DeskUnit key={`desk-${agent.configId}`} x={agent.position.x} y={agent.position.y} />
       ))}
+      {/* CEA executive desk in suite */}
+      <DeskUnit x={600} y={-40} />
 
       {/* Meeting table in executive wing */}
       <MeetingTable x={460} y={230} />
@@ -252,6 +264,9 @@ export function OfficeFloor() {
       {/* Water coolers */}
       <WaterCooler x={CX - 30} y={200} />
       <WaterCooler x={CX + CW + 30} y={520} />
+
+      {/* ─── Layer 7.5: Communication Lines ─── */}
+      <CommunicationLines />
 
       {/* ─── Layer 8: Agent avatars (topmost) ─── */}
       {agentList.map((agent) => (
