@@ -4,6 +4,11 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useAgentStore } from '@/store/agent-store';
 import { AGENT_ROLES } from '@rigelhq/shared';
 import { SidebarAvatar } from '../office/agent-avatar';
+import { voiceConfig } from '@/lib/voice-config';
+import { extractShortResponse } from '@/lib/voice-utils';
+import { useVoice } from '@/hooks/use-voice';
+import { useTts } from '@/hooks/use-tts';
+import { VoiceBar } from './voice-bar';
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -21,6 +26,81 @@ export function ChatBar({ onSend }: ChatBarProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // ── Voice state ───────────────────────────────────────────
+  const [isVoiceMode, setIsVoiceMode] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const lastMsgCountRef = useRef(messages.length);
+
+  const voice = useVoice({
+    onTranscript: useCallback(
+      (text: string, isFinal: boolean) => {
+        setVoiceTranscript(text);
+        if (isFinal && text.trim()) {
+          onSend(text.trim(), selectedAgent === 'cea' ? undefined : selectedAgent);
+          setVoiceTranscript('');
+          setPanelOpen(true);
+        }
+      },
+      [onSend, selectedAgent],
+    ),
+    onError: useCallback((err: string) => {
+      setVoiceError(err);
+      setIsVoiceMode(false);
+    }, []),
+  });
+
+  const tts = useTts({
+    audioContext: audioCtxRef.current,
+  });
+
+  // ── Mic toggle ────────────────────────────────────────────
+  const toggleVoiceMode = useCallback(async () => {
+    if (isVoiceMode) {
+      voice.stop();
+      tts.stop();
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+      setIsVoiceMode(false);
+      setVoiceTranscript('');
+      setVoiceError(null);
+    } else {
+      audioCtxRef.current = new AudioContext();
+      setIsVoiceMode(true);
+      setVoiceError(null);
+      await voice.start();
+    }
+  }, [isVoiceMode, voice, tts]);
+
+  // ── Mic/TTS coordination — pause mic during playback ─────
+  useEffect(() => {
+    if (!isVoiceMode) return;
+    if (tts.isSpeaking) {
+      voice.stop();
+    } else {
+      voice.start();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tts.isSpeaking]);
+
+  // ── TTS trigger for new agent messages ────────────────────
+  useEffect(() => {
+    if (!isVoiceMode || !voiceConfig.ttsEnabled) return;
+    if (messages.length > lastMsgCountRef.current) {
+      const newMsg = messages[messages.length - 1];
+      if (newMsg.sender === 'agent' && !tts.isSpeaking) {
+        const short = extractShortResponse(newMsg.content);
+        tts.speak(short);
+      }
+    }
+    lastMsgCountRef.current = messages.length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length]);
+
+  // ── Existing effects ──────────────────────────────────────
   // Auto-scroll messages
   useEffect(() => {
     if (panelOpen && scrollRef.current) {
@@ -112,7 +192,7 @@ export function ChatBar({ onSend }: ChatBarProps) {
       {/* Bottom command bar */}
       <div className="bg-rigel-surface border-t border-rigel-border px-4 py-2">
         <form onSubmit={handleSubmit} className="flex items-center gap-2">
-          {/* Agent selector — compact dropdown */}
+          {/* Agent selector — always visible */}
           <select
             value={selectedAgent}
             onChange={(e) => setSelectedAgent(e.target.value)}
@@ -128,40 +208,74 @@ export function ChatBar({ onSend }: ChatBarProps) {
               ))}
           </select>
 
-          {/* Message input */}
-          <input
-            ref={inputRef}
-            type="text"
-            value={value}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
-            onFocus={() => { if (messages.length > 0) setPanelOpen(true); }}
-            placeholder={placeholder}
-            className="flex-1 bg-rigel-bg border border-rigel-border rounded-lg px-3 py-2 text-sm text-rigel-text placeholder-rigel-muted focus:outline-none focus:border-rigel-blue"
-          />
+          {/* Voice bar OR text input */}
+          {isVoiceMode ? (
+            <VoiceBar
+              isListening={voice.isListening}
+              isSpeaking={tts.isSpeaking}
+              transcript={voiceTranscript}
+              onStop={toggleVoiceMode}
+            />
+          ) : (
+            <>
+              {/* Message input */}
+              <input
+                ref={inputRef}
+                type="text"
+                value={value}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
+                onFocus={() => { if (messages.length > 0) setPanelOpen(true); }}
+                placeholder={placeholder}
+                className="flex-1 bg-rigel-bg border border-rigel-border rounded-lg px-3 py-2 text-sm text-rigel-text placeholder-rigel-muted focus:outline-none focus:border-rigel-blue"
+              />
 
-          {/* Toggle messages */}
-          {messages.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setPanelOpen((prev) => !prev)}
-              className="text-rigel-muted hover:text-rigel-text p-2 transition-colors"
-              title={panelOpen ? 'Hide messages' : 'Show messages'}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M2 4h12M2 8h8M2 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </button>
+              {/* Toggle messages */}
+              {messages.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setPanelOpen((prev) => !prev)}
+                  className="text-rigel-muted hover:text-rigel-text p-2 transition-colors"
+                  title={panelOpen ? 'Hide messages' : 'Show messages'}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M2 4h12M2 8h8M2 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
+
+              {/* Mic button */}
+              {voiceConfig.enabled && (
+                <button
+                  type="button"
+                  onClick={toggleVoiceMode}
+                  className="p-2 text-rigel-muted hover:text-rigel-text transition-colors"
+                  title="Voice mode"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0v-4A2.5 2.5 0 0 0 8 1Z"
+                      stroke="currentColor" strokeWidth="1.3" />
+                    <path d="M4 7v.5a4 4 0 0 0 8 0V7M8 12.5V14M6 14h4"
+                      stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
+
+              {/* Send */}
+              <button
+                type="submit"
+                disabled={!value.trim()}
+                className="px-4 py-2 bg-rigel-blue text-white rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity flex-shrink-0"
+              >
+                Send
+              </button>
+            </>
           )}
-
-          {/* Send */}
-          <button
-            type="submit"
-            disabled={!value.trim()}
-            className="px-4 py-2 bg-rigel-blue text-white rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity flex-shrink-0"
-          >
-            Send
-          </button>
         </form>
+
+        {/* Voice error */}
+        {voiceError && (
+          <div className="text-[10px] text-red-400 px-1 pt-1">{voiceError}</div>
+        )}
       </div>
     </div>
   );
