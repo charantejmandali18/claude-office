@@ -2,7 +2,9 @@
 
 import { useAgentStore } from '@/store/agent-store';
 import { AgentAvatar } from './agent-avatar';
+import { BabyAvatar } from './baby-avatar';
 import { CommunicationLines } from './communication-lines';
+import type { BabyAgent } from '@rigelhq/shared';
 
 // Helper: shorthand for var()
 const v = (name: string) => `var(--office-${name})`;
@@ -134,6 +136,7 @@ function ZoneLabel({ x, y, label, color }: { x: number; y: number; label: string
 
 export function OfficeFloor() {
   const agents = useAgentStore((s) => s.agents);
+  const babyAgents = useAgentStore((s) => s.babyAgents ?? new Map()) as Map<string, BabyAgent>;
   const agentList = [...agents.values()];
 
   // Corridor dimensions
@@ -268,10 +271,37 @@ export function OfficeFloor() {
       {/* ─── Layer 7.5: Communication Lines ─── */}
       <CommunicationLines />
 
-      {/* ─── Layer 8: Agent avatars (topmost) ─── */}
+      {/* ─── Layer 8: Agent avatars ─── */}
       {agentList.map((agent) => (
         <AgentAvatar key={agent.configId} agent={agent} />
       ))}
+
+      {/* ─── Layer 9: Baby agent avatars (topmost) ─── */}
+      {[...babyAgents.values()].map((baby) => {
+        const parent = agents.get(baby.parentAgentId);
+        if (!parent) return null;
+        // Position baby agents offset from parent (spread around parent at 30px distance)
+        const babyIndex = [...babyAgents.values()]
+          .filter((b) => b.parentAgentId === baby.parentAgentId)
+          .indexOf(baby);
+        const angle = (-45 + babyIndex * 45) * (Math.PI / 180);
+        const offsetDist = 55;
+        const babyPos = {
+          x: parent.position.x + Math.cos(angle) * offsetDist,
+          y: parent.position.y + Math.sin(angle) * offsetDist,
+        };
+        return (
+          <BabyAvatar
+            key={baby.taskId}
+            taskId={baby.taskId}
+            parentPosition={parent.position}
+            position={babyPos}
+            type={baby.type}
+            icon={baby.icon}
+            status={baby.status}
+          />
+        );
+      })}
     </svg>
   );
 }

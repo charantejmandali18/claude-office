@@ -1,5 +1,7 @@
 import type { AgentEvent } from '@rigelhq/shared';
 
+export type AgentEventCallback = (event: AgentEvent) => void | Promise<void>;
+
 /** Summary of a Claude session discovered on this machine */
 export interface SessionInfo {
   sessionId: string;
@@ -10,52 +12,33 @@ export interface SessionInfo {
   createdAt?: number;
 }
 
-export interface AgentHandle {
-  id: string;
+export interface SessionHandle {
+  sessionId: string;
   configId: string;
-  pid: number | null;
-  sessionId: string | null;
-  /** Tools this agent was spawned with — preserved across resume */
-  allowedTools?: string[];
-  /** Subagent definitions — preserved so resumed sessions keep named specialists */
-  agents?: Record<string, SubagentDef>;
-  /** Working directory for this agent's session */
-  cwd?: string;
+  abort: AbortController;
   stop(): Promise<void>;
 }
 
-export type AgentEventCallback = (event: AgentEvent) => void | Promise<void>;
-
-/** Subagent definition passed to the SDK's agents option */
-export interface SubagentDef {
-  description: string;
-  prompt: string;
-  tools?: string[];
-}
-
-export interface SpawnOptions {
-  /** Subagent definitions that this agent can delegate to via the Agent tool */
-  agents?: Record<string, SubagentDef>;
-  /** Override the default allowed tools list */
-  allowedTools?: string[];
-  /** Load user/project settings (MCP servers, plugins, CLAUDE.md, etc.) */
-  settingSources?: Array<'user' | 'project' | 'local'>;
-  /** MCP server configurations to make available */
-  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> } | { type: 'sse' | 'http'; url: string; headers?: Record<string, string> }>;
+export interface SessionOptions {
+  /** Enable ~30s AI-generated progress summaries for subagent tasks */
+  agentProgressSummaries?: boolean;
+  /** Working directory for this session */
+  cwd?: string;
 }
 
 export interface GatewayAdapter {
-  spawn(
+  /** Create a new session with agent definitions */
+  createSession(
     configId: string,
-    systemPrompt: string,
-    taskPrompt: string,
+    prompt: string,
+    agents: Record<string, import('@anthropic-ai/claude-agent-sdk').AgentDefinition>,
     onEvent: AgentEventCallback,
-    options?: SpawnOptions,
-  ): Promise<AgentHandle>;
+    options?: SessionOptions,
+  ): Promise<SessionHandle>;
 
-  /** Send a follow-up message to an existing session */
-  sendMessage(
-    handle: AgentHandle,
+  /** Send a follow-up message to an existing session (resume) */
+  resumeSession(
+    handle: SessionHandle,
     message: string,
     onEvent: AgentEventCallback,
   ): Promise<void>;
@@ -63,12 +46,7 @@ export interface GatewayAdapter {
   /** List all Claude sessions on this machine */
   listSessions(): Promise<SessionInfo[]>;
 
-  /** Send a message to any session by ID (not just managed ones) */
-  sendToSession(sessionId: string, message: string, onEvent: AgentEventCallback): Promise<void>;
-
-  /** Interrupt any in-progress query for this config (steer, not kill) */
-  interrupt(configId: string): Promise<void>;
-
-  stop(handle: AgentHandle): Promise<void>;
+  /** Stop a session */
+  stop(handle: SessionHandle): Promise<void>;
   stopAll(): Promise<void>;
 }

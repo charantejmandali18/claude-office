@@ -20,6 +20,11 @@ export function useSocket() {
     addMessage,
     initAgents,
     updateAgentStatus,
+    createSessionState,
+    switchSession,
+    handleSessionEvent,
+    addBabyAgent,
+    removeBabyAgent,
   } = useAgentStore();
 
   useEffect(() => {
@@ -105,6 +110,49 @@ export function useSocket() {
           timestamp: event.timestamp,
         });
       }
+    });
+
+    // ── Session events ──────────────────────────────────────
+    socket.on('session:list', (sessions: Array<{ sessionId: string; projectName: string; status: string }>) => {
+      for (const s of sessions) {
+        createSessionState(s.sessionId, s.projectName);
+        if (s.status === 'stopped') {
+          handleSessionEvent({ type: 'stopped', sessionId: s.sessionId });
+        }
+      }
+    });
+
+    socket.on('session:created', (data: { sessionId: string; projectName: string }) => {
+      handleSessionEvent({ type: 'created', sessionId: data.sessionId, projectName: data.projectName });
+    });
+
+    socket.on('session:switched', (data: { sessionId: string }) => {
+      handleSessionEvent({ type: 'switched', sessionId: data.sessionId });
+    });
+
+    socket.on('session:stopped', (data: { sessionId: string }) => {
+      handleSessionEvent({ type: 'stopped', sessionId: data.sessionId });
+    });
+
+    // ── Baby agent events ─────────────────────────────────
+    socket.on('baby-agent:spawn', (data: { taskId: string; parentAgentId: string; type: string }) => {
+      addBabyAgent(data.taskId, data.parentAgentId, data.type);
+    });
+
+    socket.on('baby-agent:remove', (data: { taskId: string }) => {
+      removeBabyAgent(data.taskId);
+    });
+
+    // ── Chat stream (team lead output) ────────────────────
+    socket.on('chat:stream', (data: { text: string; agentId?: string; agentName?: string }) => {
+      addMessage({
+        id: `stream-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        sender: 'agent',
+        agentId: data.agentId,
+        agentName: data.agentName,
+        content: data.text,
+        timestamp: Date.now(),
+      });
     });
 
     return () => {

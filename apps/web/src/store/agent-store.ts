@@ -3,8 +3,8 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
-import type { AgentStatus, AgentEvent } from '@rigelhq/shared';
-import { AGENT_ROLES } from '@rigelhq/shared';
+import type { AgentStatus, AgentEvent, BabyAgentType, SessionStatus } from '@rigelhq/shared';
+import { AGENT_ROLES, BABY_AGENT_ICONS } from '@rigelhq/shared';
 import {
   calculateMeetingPoint,
   calculateGroupMeetingPositions,
@@ -85,6 +85,26 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface SessionState {
+  sessionId: string;
+  projectName: string;
+  status: SessionStatus;
+  messages: ChatMessage[];
+  activeAgents: Set<string>;
+  createdAt: number;
+  lastActive: number;
+}
+
+export interface BabyAgentState {
+  taskId: string;
+  parentAgentId: string;
+  type: BabyAgentType;
+  icon: string;
+  position: { x: number; y: number };
+  status: AgentStatus;
+  spawnedAt: number;
+}
+
 /**
  * Shape of a collaboration event's data payload.
  * These are local types that mirror what the backend will emit;
@@ -115,9 +135,19 @@ interface MovementEventData {
   [key: string]: unknown;
 }
 
+interface SessionEventPayload {
+  type: string;
+  sessionId: string;
+  projectName?: string;
+  status?: string;
+}
+
 interface AgentStore {
   agents: Map<string, AgentState>;
   collaborations: Map<string, ActiveCollaboration>;
+  sessions: Map<string, SessionState>;
+  activeSessionId: string | null;
+  babyAgents: Map<string, BabyAgentState>;
   messages: ChatMessage[];
   events: AgentEvent[];
   connected: boolean;
@@ -132,12 +162,24 @@ interface AgentStore {
   addMessage: (message: ChatMessage) => void;
   addEvent: (event: AgentEvent) => void;
   updateAgentStatus: (configId: string, status: AgentStatus) => void;
+
+  // Session actions
+  switchSession: (sessionId: string) => void;
+  createSessionState: (sessionId: string, projectName: string) => void;
+  handleSessionEvent: (event: SessionEventPayload) => void;
+
+  // Baby agent actions
+  addBabyAgent: (taskId: string, parentId: string, type: string) => void;
+  removeBabyAgent: (taskId: string) => void;
 }
 
 export const useAgentStore = create<AgentStore>()(
   immer((set) => ({
     agents: new Map(),
     collaborations: new Map(),
+    sessions: new Map(),
+    activeSessionId: null,
+    babyAgents: new Map(),
     messages: [],
     events: [],
     connected: false,
@@ -428,6 +470,103 @@ export const useAgentStore = create<AgentStore>()(
       set((state) => {
         const agent = state.agents.get(configId);
         if (agent) agent.status = status;
+      });
+    },
+
+    // ── Session actions ───────────────────────────────────────
+    switchSession: (sessionId) => {
+      set((state) => {
+        state.activeSessionId = sessionId;
+      });
+    },
+
+    createSessionState: (sessionId, projectName) => {
+      set((state) => {
+        if (state.sessions.has(sessionId)) return;
+        const now = Date.now();
+        state.sessions.set(sessionId, {
+          sessionId,
+          projectName,
+          status: 'active',
+          messages: [],
+          activeAgents: new Set(),
+          createdAt: now,
+          lastActive: now,
+        });
+      });
+    },
+
+    handleSessionEvent: (event) => {
+      set((state) => {
+        switch (event.type) {
+          case 'created': {
+            if (!state.sessions.has(event.sessionId)) {
+              const now = Date.now();
+              state.sessions.set(event.sessionId, {
+                sessionId: event.sessionId,
+                projectName: event.projectName ?? 'Unknown',
+                status: 'active',
+                messages: [],
+                activeAgents: new Set(),
+                createdAt: now,
+                lastActive: now,
+              });
+            }
+            break;
+          }
+          case 'switched': {
+            state.activeSessionId = event.sessionId;
+            break;
+          }
+          case 'stopped': {
+            const session = state.sessions.get(event.sessionId);
+            if (session) {
+              session.status = 'stopped';
+            }
+            break;
+          }
+          default: {
+            // Update status if provided
+            if (event.status) {
+              const session = state.sessions.get(event.sessionId);
+              if (session) {
+                session.status = event.status as SessionStatus;
+                session.lastActive = Date.now();
+              }
+            }
+            break;
+          }
+        }
+      });
+    },
+
+    // ── Baby agent actions ────────────────────────────────────
+    addBabyAgent: (taskId, parentId, type) => {
+      set((state) => {
+        const parent = state.agents.get(parentId);
+        const parentPos = parent?.position ?? { x: 400, y: 300 };
+
+        const babyType = type as BabyAgentType;
+        const icon = BABY_AGENT_ICONS[babyType] ?? '⚙️';
+
+        state.babyAgents.set(taskId, {
+          taskId,
+          parentAgentId: parentId,
+          type: babyType,
+          icon,
+          position: {
+            x: parentPos.x + 20,
+            y: parentPos.y + 20,
+          },
+          status: 'THINKING',
+          spawnedAt: Date.now(),
+        });
+      });
+    },
+
+    removeBabyAgent: (taskId) => {
+      set((state) => {
+        state.babyAgents.delete(taskId);
       });
     },
   })),

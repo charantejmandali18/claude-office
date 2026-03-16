@@ -2,10 +2,13 @@
 
 import { useMemo } from 'react';
 import { useAgentStore } from '@/store/agent-store';
-import type { ActiveCollaboration, AgentState, LineState } from '@/store/agent-store';
+import type { ActiveCollaboration, AgentState, BabyAgentState, LineState } from '@/store/agent-store';
 
 // Agent avatar radius (must match agent-avatar.tsx)
 const AGENT_R = 26;
+
+// Baby agent avatar radius (smaller than specialist avatars)
+const BABY_AGENT_R = 14;
 
 // Maximum concurrent lines rendered (performance guard — ADR 4.6)
 const MAX_LINES = 8;
@@ -59,6 +62,16 @@ function edgePoint(center: Point, target: Point, radius: number): Point {
   };
 }
 
+// ── Connection types for three-tier architecture ─────────────
+
+/**
+ * Three-tier communication line types:
+ * - delegation: Team Lead → Specialist (solid, 2px, animated dash)
+ * - consultation: Specialist ↔ Specialist (dashed, 1.5px, bidirectional)
+ * - baby-agent: Specialist → Baby Agent (dotted, 1px, inherits parent color)
+ */
+type ConnectionType = 'delegation' | 'consultation' | 'baby-agent';
+
 // ── Line style derivation from state ─────────────────────────
 
 interface LineStyle {
@@ -71,11 +84,30 @@ interface LineStyle {
   pulseAnimation: boolean;
 }
 
-function getLineStyle(lineState: LineState, baseColor: string): LineStyle {
+/**
+ * Base stroke properties per connection type, before line state is applied.
+ */
+function getConnectionBaseStyle(connectionType: ConnectionType): {
+  strokeWidth: number;
+  strokeDasharray?: string;
+} {
+  switch (connectionType) {
+    case 'delegation':
+      return { strokeWidth: 2, strokeDasharray: '8 4' };
+    case 'consultation':
+      return { strokeWidth: 1.5, strokeDasharray: '6 3' };
+    case 'baby-agent':
+      return { strokeWidth: 1, strokeDasharray: '2 3' };
+  }
+}
+
+function getLineStyle(lineState: LineState, baseColor: string, connectionType: ConnectionType = 'delegation'): LineStyle {
+  const base = getConnectionBaseStyle(connectionType);
+
   switch (lineState) {
     case 'initiating':
       return {
-        strokeWidth: 1.5,
+        strokeWidth: base.strokeWidth * 0.75,
         strokeDasharray: '4 6',
         opacity: 0.3,
         color: '#9ca3af', // gray while walking
@@ -85,27 +117,27 @@ function getLineStyle(lineState: LineState, baseColor: string): LineStyle {
       };
     case 'active':
       return {
-        strokeWidth: 2.5,
-        strokeDasharray: '8 4',
-        opacity: 0.7,
+        strokeWidth: base.strokeWidth,
+        strokeDasharray: base.strokeDasharray,
+        opacity: connectionType === 'baby-agent' ? 0.5 : 0.7,
         color: baseColor,
-        showParticles: true,
-        particleSpeed: '1.5s',
+        showParticles: connectionType !== 'baby-agent',
+        particleSpeed: connectionType === 'consultation' ? '2s' : '1.5s',
         pulseAnimation: false,
       };
     case 'thinking':
       return {
-        strokeWidth: 2,
-        strokeDasharray: '6 4',
-        opacity: 0.5,
+        strokeWidth: base.strokeWidth,
+        strokeDasharray: base.strokeDasharray,
+        opacity: connectionType === 'baby-agent' ? 0.35 : 0.5,
         color: baseColor,
         showParticles: false,
         particleSpeed: '3s',
-        pulseAnimation: true,
+        pulseAnimation: connectionType !== 'baby-agent',
       };
     case 'error':
       return {
-        strokeWidth: 2.5,
+        strokeWidth: base.strokeWidth,
         strokeDasharray: '4 3',
         opacity: 0.8,
         color: ERROR_COLOR,
@@ -115,7 +147,7 @@ function getLineStyle(lineState: LineState, baseColor: string): LineStyle {
       };
     case 'fading':
       return {
-        strokeWidth: 2,
+        strokeWidth: base.strokeWidth,
         opacity: 0,
         color: baseColor,
         showParticles: false,
@@ -187,6 +219,9 @@ function CollaborationLine({
   tooltip,
   isSpeaking,
   staggerDelay,
+  connectionType = 'delegation',
+  fromRadius = AGENT_R,
+  toRadius = AGENT_R,
 }: {
   from: Point;
   to: Point;
@@ -196,17 +231,22 @@ function CollaborationLine({
   tooltip: string;
   isSpeaking: boolean;
   staggerDelay: number;
+  connectionType?: ConnectionType;
+  fromRadius?: number;
+  toRadius?: number;
 }) {
-  const style = getLineStyle(lineState, baseColor);
+  const style = getLineStyle(lineState, baseColor, connectionType);
 
   // Offset endpoints to the edge of the agent's status ring
-  const edgeFrom = edgePoint(from, to, AGENT_R + 2);
-  const edgeTo = edgePoint(to, from, AGENT_R + 2);
+  const edgeFrom = edgePoint(from, to, fromRadius + 2);
+  const edgeTo = edgePoint(to, from, toRadius + 2);
 
   const d = bezierPath(edgeFrom, edgeTo, index);
 
-  // Speaking state: thicker line (3px vs 2.5px per PRD spec)
-  const strokeWidth = isSpeaking && lineState === 'active' ? 3 : style.strokeWidth;
+  // Speaking state: thicker line per PRD spec (not for baby-agent lines)
+  const strokeWidth = isSpeaking && lineState === 'active' && connectionType !== 'baby-agent'
+    ? style.strokeWidth + 1
+    : style.strokeWidth;
 
   return (
     <g
@@ -382,8 +422,9 @@ function deriveLineState(
 export function CommunicationLines() {
   const collaborations = useAgentStore((s) => s.collaborations);
   const agents = useAgentStore((s) => s.agents);
+  const babyAgents = useAgentStore((s) => s.babyAgents);
 
-  // Build the list of lines to render
+  // Build the list of collaboration lines to render
   const lines = useMemo(() => {
     const result: Array<{
       key: string;
@@ -395,6 +436,9 @@ export function CommunicationLines() {
       tooltip: string;
       isSpeaking: boolean;
       staggerDelay: number;
+      connectionType: ConnectionType;
+      fromRadius: number;
+      toRadius: number;
     }> = [];
 
     let lineIndex = 0;
@@ -402,6 +446,10 @@ export function CommunicationLines() {
     collaborations.forEach((collab: ActiveCollaboration) => {
       const parts = collab.participants;
       const lineState = deriveLineState(collab, agents);
+
+      // Map collaboration type to connection type
+      const connectionType: ConnectionType =
+        collab.type === 'consultation' ? 'consultation' : 'delegation';
 
       // Build tooltip: "{initiator} → {participants}: {topic}"
       const initiatorAgent = agents.get(parts[0]) as AgentState | undefined;
@@ -413,7 +461,8 @@ export function CommunicationLines() {
           return a?.name ?? pid;
         })
         .join(', ');
-      const tooltip = `${initiatorName} \u2192 ${otherNames}: ${collab.topic || 'collaboration'}`;
+      const separator = connectionType === 'consultation' ? ' \u2194 ' : ' \u2192 ';
+      const tooltip = `${initiatorName}${separator}${otherNames}: ${collab.topic || 'collaboration'}`;
 
       // Check if the active speaker is in this collaboration
       const isSpeaking = collab.activeSpeaker
@@ -436,6 +485,9 @@ export function CommunicationLines() {
             isSpeaking,
             // Stagger: 100ms per line for rapid delegations (EC-4)
             staggerDelay: lineIndex * 100,
+            connectionType,
+            fromRadius: AGENT_R,
+            toRadius: AGENT_R,
           });
           lineIndex++;
         }
@@ -457,6 +509,9 @@ export function CommunicationLines() {
             tooltip,
             isSpeaking,
             staggerDelay: lineIndex * 100,
+            connectionType,
+            fromRadius: AGENT_R,
+            toRadius: AGENT_R,
           });
           lineIndex++;
         }
@@ -471,6 +526,50 @@ export function CommunicationLines() {
 
     return result;
   }, [collaborations, agents]);
+
+  // Build baby agent lines: dotted lines from parent specialist to spawned baby agent
+  const babyLines = useMemo(() => {
+    const result: Array<{
+      key: string;
+      from: Point;
+      to: Point;
+      baseColor: string;
+      tooltip: string;
+      parentStatus: LineState;
+    }> = [];
+
+    babyAgents.forEach((baby: BabyAgentState, taskId: string) => {
+      const parent = agents.get(baby.parentAgentId) as AgentState | undefined;
+      if (!parent) return;
+
+      // Find the parent's active collaboration to inherit its color
+      let baseColor = '#9ca3af'; // default gray if no active collaboration
+      if (parent.collaborationId) {
+        const collab = collaborations.get(parent.collaborationId);
+        if (collab) baseColor = collab.color;
+      }
+
+      // Derive a simple line state from the parent agent's status
+      let parentStatus: LineState = 'active';
+      if (parent.status === 'ERROR') parentStatus = 'error';
+      else if (parent.status === 'THINKING' || parent.status === 'TOOL_CALLING') parentStatus = 'thinking';
+      else if (baby.status === 'ERROR') parentStatus = 'error';
+
+      const parentName = parent.name ?? baby.parentAgentId;
+      const tooltip = `${parentName} → sub-agent (${baby.type})`;
+
+      result.push({
+        key: `baby-${taskId}`,
+        from: parent.position,
+        to: baby.position,
+        baseColor,
+        tooltip,
+        parentStatus,
+      });
+    });
+
+    return result;
+  }, [babyAgents, agents, collaborations]);
 
   // Determine which collaborations have 3+ participants for meeting zones
   const meetingZones = useMemo(() => {
@@ -495,7 +594,7 @@ export function CommunicationLines() {
     return zones;
   }, [collaborations]);
 
-  if (lines.length === 0 && meetingZones.length === 0) return null;
+  if (lines.length === 0 && meetingZones.length === 0 && babyLines.length === 0) return null;
 
   return (
     <g className="communication-lines" style={{ willChange: 'transform' }}>
@@ -509,7 +608,7 @@ export function CommunicationLines() {
         />
       ))}
 
-      {/* Communication lines */}
+      {/* Collaboration lines (delegation + consultation) */}
       {lines.map((line) => (
         <CollaborationLine
           key={line.key}
@@ -521,6 +620,27 @@ export function CommunicationLines() {
           tooltip={line.tooltip}
           isSpeaking={line.isSpeaking}
           staggerDelay={line.staggerDelay}
+          connectionType={line.connectionType}
+          fromRadius={line.fromRadius}
+          toRadius={line.toRadius}
+        />
+      ))}
+
+      {/* Baby agent lines (dotted, specialist → sub-agent) */}
+      {babyLines.map((line) => (
+        <CollaborationLine
+          key={line.key}
+          from={line.from}
+          to={line.to}
+          lineState={line.parentStatus}
+          baseColor={line.baseColor}
+          index={0}
+          tooltip={line.tooltip}
+          isSpeaking={false}
+          staggerDelay={0}
+          connectionType="baby-agent"
+          fromRadius={AGENT_R}
+          toRadius={BABY_AGENT_R}
         />
       ))}
     </g>

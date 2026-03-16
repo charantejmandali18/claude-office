@@ -45,10 +45,10 @@ export interface Agent {
   role: string;
   icon: string;
   status: AgentStatus;
-  pid: number | null;
-  startedAt: Date | null;
+  sessionId: string | null;
+  taskId: string | null;
   metadata: Record<string, unknown> | null;
-  parentId: string | null;
+  parentAgentId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

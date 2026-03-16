@@ -7,6 +7,23 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Session {
+  id          String        @id @default(cuid())
+  projectName String
+  sessionId   String        @unique
+  teamName    String?
+  status      SessionStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+  lastActive  DateTime      @updatedAt
+  metadata    Json?
+}
+
+enum SessionStatus {
+  ACTIVE
+  IDLE
+  STOPPED
+}
+
 model Agent {
   id              String          @id @default(cuid())
   configId        String          @unique
@@ -14,15 +31,15 @@ model Agent {
   role            String
   icon            String
   status          AgentStatus     @default(OFFLINE)
-  pid             Int?
-  startedAt       DateTime?
+  sessionId       String?
+  taskId          String?
   metadata        Json?
   tasks           Task[]          @relation("AssignedAgent")
   createdTasks    Task[]          @relation("CreatedBy")
   messages        Message[]
   activityLogs    ActivityLog[]
-  parentId        String?
-  parent          Agent?          @relation("SubAgents", fields: [parentId], references: [id])
+  parentAgentId   String?
+  parent          Agent?          @relation("SubAgents", fields: [parentAgentId], references: [id])
   children        Agent[]         @relation("SubAgents")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt

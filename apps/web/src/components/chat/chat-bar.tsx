@@ -178,7 +178,7 @@ export function ChatBar({ onSend, onSummarize }: ChatBarProps) {
     : `Message ${selectedMeta?.name ?? selectedAgent}...`;
 
   return (
-    <div className="flex flex-col flex-shrink-0 max-h-[50vh]">
+    <div className="flex flex-col h-full">
       {/* Messages panel — inline above input, scrolls within its own container */}
       {panelOpen && messages.length > 0 && (
         <div className="flex-1 min-h-0 bg-rigel-surface/95 backdrop-blur-sm border-t border-rigel-border flex flex-col overflow-hidden">
