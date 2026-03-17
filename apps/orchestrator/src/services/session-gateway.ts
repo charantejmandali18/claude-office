@@ -68,10 +68,11 @@ SendMessage({ to: "frontend-engineer", content: "Please also add form validation
 
 ## CRITICAL RULES
 - ALWAYS use TeamCreate first (once), then Agent with team_name + name.
-- Set \`run_in_background: true\` on Agent calls so teammates run in parallel.
-- For multi-domain tasks, spawn multiple teammates simultaneously.
+- Do NOT set run_in_background. Let teammates run in the foreground so you can see their results.
+- For multi-domain tasks, spawn multiple teammates — they will run in parallel automatically.
 - NEVER do work yourself — always delegate to a named specialist.
 - Use \`SendMessage\` when you need to communicate with a running teammate.
+- After all teammates complete, summarize their results concisely for the user.
 - Keep your summaries short.
 `;
 
