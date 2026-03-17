@@ -299,41 +299,58 @@ export class ClaudeAdapter implements GatewayAdapter {
         this.pollTeammateCompletion(cli, emit);
       }
     } else if (type === 'user') {
-      // Tool results / user messages — check for teammate events
+      // Check tool_use_result (top-level field on teammate spawn/complete)
       const toolResult = msg.tool_use_result as Record<string, unknown> | undefined;
       if (toolResult?.status === 'teammate_spawned') {
         const name = toolResult.name as string;
         const teamName = toolResult.team_name as string;
         cli.activeTeammates.add(name);
         console.log(`[Claude] Teammate confirmed: ${name}@${teamName} (${cli.activeTeammates.size} active)`);
-      } else if (toolResult?.status === 'completed') {
-        // Teammate completed — the tool_result comes back with the agent's output
-        const agentId = toolResult.agentId as string | undefined;
-        const toolUseId = msg.message as Record<string, unknown>;
-        const content = toolUseId?.content as Array<Record<string, unknown>>;
+      } else if (toolResult?.status === 'completed' && toolResult.agentId) {
+        // Teammate completed — resolve which agent from the tool call mapping
+        const resolvedAgent = this.resolveCompletedTeammate(toolResult, msg);
+        if (resolvedAgent) {
+          cli.activeTeammates.delete(resolvedAgent);
+          console.log(`[Claude] ✅ Teammate completed: ${resolvedAgent} (${cli.activeTeammates.size} remaining)`);
+          await emit('lifecycle', { phase: 'end' }, resolvedAgent);
+        }
+      }
 
-        // Try to find which agent this belongs to from the tool_use_id
-        let resolvedAgent: string | undefined;
-        if (content) {
-          for (const block of content) {
-            const tuId = block.tool_use_id as string | undefined;
-            if (tuId && this.toolUseToAgent.has(tuId)) {
-              resolvedAgent = this.toolUseToAgent.get(tuId);
-              break;
+      // Also check message.content for tool_result blocks (teammate results come back this way)
+      const message = msg.message as Record<string, unknown> | undefined;
+      const content = message?.content as Array<Record<string, unknown>> | undefined;
+      if (content) {
+        for (const block of content) {
+          if (block.type === 'tool_result') {
+            const toolUseId = block.tool_use_id as string;
+            const agentName = this.toolUseToAgent.get(toolUseId);
+            if (agentName && cli.activeTeammates.has(agentName)) {
+              cli.activeTeammates.delete(agentName);
+              console.log(`[Claude] ✅ Teammate completed (tool_result): ${agentName} (${cli.activeTeammates.size} remaining)`);
+              await emit('lifecycle', { phase: 'end' }, agentName);
             }
           }
         }
+      }
+    }
+  }
 
-        if (resolvedAgent) {
-          cli.activeTeammates.delete(resolvedAgent);
-          console.log(`[Claude] Teammate completed: ${resolvedAgent} (${cli.activeTeammates.size} remaining)`);
-          await emit('lifecycle', { phase: 'end' }, resolvedAgent);
-        } else if (agentId) {
-          // Try to match agentId format like "a1234..." to a name
-          console.log(`[Claude] Tool result completed: agentId=${agentId}`);
+  /** Resolve which teammate completed from a tool_use_result */
+  private resolveCompletedTeammate(toolResult: Record<string, unknown>, msg: Record<string, unknown>): string | undefined {
+    // Try direct name from toolResult
+    if (typeof toolResult.name === 'string') return toolResult.name;
+    // Try matching agentId to tool_use mapping
+    const message = msg.message as Record<string, unknown> | undefined;
+    const content = message?.content as Array<Record<string, unknown>> | undefined;
+    if (content) {
+      for (const block of content) {
+        const tuId = block.tool_use_id as string | undefined;
+        if (tuId && this.toolUseToAgent.has(tuId)) {
+          return this.toolUseToAgent.get(tuId);
         }
       }
     }
+    return undefined;
   }
 
   /** Poll for teammate process completion by checking child processes */
