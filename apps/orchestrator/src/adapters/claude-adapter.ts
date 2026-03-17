@@ -48,6 +48,8 @@ export class ClaudeAdapter implements GatewayAdapter {
         agentProgressSummaries: options?.agentProgressSummaries ?? true,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
+        // Load user settings so hooks (SubagentStart, TeammateIdle, etc.) fire
+        settingSources: ['user'],
         ...(options?.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
         ...(options?.cwd ? { cwd: options.cwd } : {}),
       },
@@ -250,6 +252,7 @@ export class ClaudeAdapter implements GatewayAdapter {
         agentProgressSummaries: true,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
+        settingSources: ['user'],
       },
     });
 

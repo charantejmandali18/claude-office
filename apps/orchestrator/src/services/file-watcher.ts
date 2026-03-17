@@ -33,15 +33,15 @@ export class FileWatcher {
     try {
       const watcher = fs.watch(dir, { recursive: true }, (eventType, filename) => {
         if (!filename) return;
-        console.log(`[FileWatcher] ${type} change: ${eventType} ${filename}`);
-        this.handleChange(type, dir, filename).catch((err) => {
-          console.error(`[FileWatcher] Error handling ${type} change:`, err);
-        });
+        this.handleChange(type, dir, filename).catch(() => {});
+      });
+      watcher.on('error', (err) => {
+        console.warn(`[FileWatcher] Watcher error for ${dir}:`, (err as NodeJS.ErrnoException).code ?? err);
       });
       this.watchers.push(watcher);
       console.log(`[FileWatcher] Watching ${type} directory: ${dir}`);
     } catch (err) {
-      console.warn(`[FileWatcher] Failed to watch ${dir}:`, err);
+      console.warn(`[FileWatcher] Failed to watch ${dir}:`, (err as NodeJS.ErrnoException).code ?? err);
     }
   }
 
