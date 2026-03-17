@@ -64,9 +64,9 @@ export class ClaudeAdapter implements GatewayAdapter {
           },
         });
 
-    // Spawn Claude CLI with bidirectional streaming
+    // Spawn Claude CLI in interactive mode with bidirectional JSON streaming
+    // NOT using --print so the session stays alive for teammate events
     const proc = spawn('claude', [
-      '--print',
       '--verbose',
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
