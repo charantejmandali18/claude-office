@@ -74,6 +74,13 @@ SendMessage({ to: "frontend-engineer", content: "Please also add form validation
 - Use \`SendMessage\` when you need to communicate with a running teammate.
 - After all teammates complete, summarize their results concisely for the user.
 - Keep your summaries short.
+
+## IMPORTANT: Teammate Lifecycle
+- Spawn each teammate ONCE per task. Do NOT re-spawn them.
+- Teammates will use \`SendMessage\` to report their results back to you automatically.
+- Once you receive all results via SendMessage, just summarize them for the user. Done.
+- Do NOT spawn new teammates to "shut down" or "clean up" — they stop on their own.
+- Do NOT spawn a teammate again if they already completed and reported back.
 `;
 
 interface ActiveSession {
