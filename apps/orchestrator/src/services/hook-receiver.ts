@@ -68,6 +68,21 @@ export class HookReceiver {
       case 'SessionEnd': {
         const reason = payload.reason as string ?? '';
         console.log(`[Hook] Session ended: ${sessionId?.slice(0, 8)} reason=${reason}`);
+        // Mark all active agents as IDLE and close their lines
+        for (const [agentName, collabId] of activeCollabs) {
+          await this.updateAgentStatus(agentName, 'IDLE');
+          await this.eventBus.publish({
+            id: generateEventId(),
+            agentId: agentName,
+            runId: generateRunId(),
+            seq: 1,
+            stream: 'collaboration' as EventStream,
+            timestamp: Date.now(),
+            data: { phase: 'end', collaborationId: collabId, participants: ['cea', agentName] },
+          });
+        }
+        activeCollabs.clear();
+        agentIdToName.clear();
         break;
       }
 
@@ -83,6 +98,21 @@ export class HookReceiver {
 
         // Resolve the display name
         const agentName = agentType || agentId;
+
+        // If this agent is already active (re-spawn), close the old one first
+        if (agentName && activeCollabs.has(agentName)) {
+          const oldCollabId = activeCollabs.get(agentName)!;
+          activeCollabs.delete(agentName);
+          await this.eventBus.publish({
+            id: generateEventId(),
+            agentId: agentName,
+            runId: generateRunId(),
+            seq: 1,
+            stream: 'collaboration' as EventStream,
+            timestamp: Date.now(),
+            data: { phase: 'end', collaborationId: oldCollabId, participants: ['cea', agentName] },
+          });
+        }
 
         // If this is a known specialist, activate them in the UI
         if (agentName && AGENT_ROLE_MAP.has(agentName)) {
@@ -193,8 +223,13 @@ export class HookReceiver {
       }
 
       case 'Stop': {
-        // Agent turn ended
-        console.log(`[Hook] Agent stopped: session=${sessionId?.slice(0, 8)}`);
+        // Main agent turn ended — if no agent_id, this is the team lead stopping
+        // Check if all teammates should be marked idle
+        if (!agentId) {
+          console.log(`[Hook] Team lead turn stopped: session=${sessionId?.slice(0, 8)} (${activeCollabs.size} active agents)`);
+        } else {
+          console.log(`[Hook] Agent stopped: ${agentIdToName.get(agentId) ?? agentId} session=${sessionId?.slice(0, 8)}`);
+        }
         break;
       }
 
