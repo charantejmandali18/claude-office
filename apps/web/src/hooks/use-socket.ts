@@ -162,7 +162,12 @@ export function useSocket() {
 
   const sendMessage = (content: string, targetAgent?: string) => {
     if (socketRef.current?.connected) {
-      socketRef.current.emit('chat:message', { content, targetAgent });
+      const activeSessionId = useAgentStore.getState().activeSessionId;
+      socketRef.current.emit('chat:message', {
+        content,
+        targetAgent,
+        ...(activeSessionId ? { sessionId: activeSessionId } : {}),
+      });
       addMessage({
         id: `user-${Date.now()}`,
         sender: 'user',

@@ -512,6 +512,8 @@ export const useAgentStore = create<AgentStore>()(
                 lastActive: now,
               });
             }
+            // Always set as active session so follow-up messages route correctly
+            state.activeSessionId = event.sessionId;
             break;
           }
           case 'switched': {

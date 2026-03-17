@@ -87,13 +87,15 @@ export class WebSocketServer {
         }
 
         try {
-          if (data.sessionId) {
+          if (data.sessionId && this.sessionGateway.hasSession(data.sessionId)) {
             // Send to existing session
             await this.sessionGateway.sendMessage(data.sessionId, data.content);
           } else {
             // Create a new session
             const projectName = data.projectName ?? 'default';
-            await this.sessionGateway.createSession(projectName, data.content);
+            const sessionId = await this.sessionGateway.createSession(projectName, data.content);
+            // Notify frontend so it can track the sessionId for follow-up messages
+            socket.emit('session:created', { sessionId, projectName });
           }
         } catch (err) {
           console.error('[WS] Error routing message:', err);
