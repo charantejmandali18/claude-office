@@ -167,44 +167,39 @@ export class HookReceiver {
         if (agentName) stoppedAgents.add(agentName);
 
         if (agentName && AGENT_ROLE_MAP.has(agentName)) {
-          // Debounce: delay IDLE by 3s — if the agent restarts (shutdown protocol),
-          // the SubagentStart handler will cancel the stoppedAgents guard
+          // Debounce ALL state changes by 3s to handle Agent Teams shutdown protocol.
+          // If the agent re-spawns within 3s, stoppedAgents guard prevents IDLE.
           setTimeout(async () => {
-            // Only set IDLE if agent is still in stopped state (wasn't re-spawned)
-            if (stoppedAgents.has(agentName)) {
-              await this.updateAgentStatus(agentName, 'IDLE');
+            if (!stoppedAgents.has(agentName)) return; // re-spawned, skip
+
+            // Set agent IDLE
+            await this.updateAgentStatus(agentName, 'IDLE');
+
+            // End communication line
+            const collabId = activeCollabs.get(agentName);
+            if (collabId) {
+              activeCollabs.delete(agentName);
+              await this.eventBus.publish({
+                id: generateEventId(),
+                agentId: agentName,
+                runId: generateRunId(),
+                seq: 1,
+                stream: 'collaboration' as EventStream,
+                timestamp: Date.now(),
+                data: {
+                  phase: 'end',
+                  collaborationId: collabId,
+                  participants: ['cea', agentName],
+                },
+              });
+            }
+
+            // If ALL agents are now idle, set CEA to IDLE too
+            if (activeCollabs.size === 0) {
+              console.log(`[Hook] All teammates done — setting CEA to IDLE`);
+              await this.updateAgentStatus('cea', 'IDLE');
             }
           }, 3000);
-
-          // End communication line
-          const collabId = activeCollabs.get(agentName);
-          if (collabId) {
-            activeCollabs.delete(agentName);
-            await this.eventBus.publish({
-              id: generateEventId(),
-              agentId: agentName,
-              runId: generateRunId(),
-              seq: 1,
-              stream: 'collaboration' as EventStream,
-              timestamp: Date.now(),
-              data: {
-                phase: 'end',
-                collaborationId: collabId,
-                participants: ['cea', agentName],
-              },
-            });
-          }
-
-          // If ALL agents are now idle (no active collabs), set CEA to IDLE too
-          // Debounce to handle shutdown protocol re-spawns
-          if (activeCollabs.size === 0) {
-            setTimeout(async () => {
-              if (activeCollabs.size === 0) {
-                console.log(`[Hook] All teammates done — setting CEA to IDLE`);
-                await this.updateAgentStatus('cea', 'IDLE');
-              }
-            }, 5000);
-          }
         }
         // Clean up ID mapping
         agentIdToName.delete(agentId);
