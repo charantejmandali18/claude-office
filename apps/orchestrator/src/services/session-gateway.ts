@@ -228,30 +228,25 @@ export class SessionGateway {
   // Event handling
   // ---------------------------------------------------------------------------
 
-  /** Handle events from the SDK stream */
+  /** Handle events from the CLI stdout stream.
+   *  ONLY updates CEA (team lead) status — specialist statuses come from hooks. */
   private async handleEvent(event: AgentEvent): Promise<void> {
     // Publish all events to the bus (UI gets everything)
     await this.eventBus.publish(event);
 
-    // Track agent status based on event stream
+    // Only update CEA status from stdout — specialists are handled by hooks
     const agentId = event.agentId;
-    const isCea = agentId === 'cea';
-    const isKnownAgent = agentId && AGENT_ROLE_MAP.has(agentId);
-
-    if (!isKnownAgent) return;
+    if (agentId !== 'cea') return;
 
     const status = this.mapEventToStatus(event);
     if (!status) return;
 
-    const roleMeta = AGENT_ROLE_MAP.get(agentId)!;
+    const roleMeta = AGENT_ROLE_MAP.get(agentId);
+    if (!roleMeta) return;
 
     await this.db.agent.upsert({
       where: { configId: agentId },
-      update: {
-        status,
-        sessionId: (event.sessionKey as string) ?? null,
-        taskId: (event.data.taskId as string) ?? null,
-      },
+      update: { status },
       create: {
         configId: agentId,
         name: roleMeta.name,
@@ -263,59 +258,7 @@ export class SessionGateway {
 
     await this.eventBus.publishStatus(agentId, status);
 
-    // Track active agents per session
-    for (const [, session] of this.sessions) {
-      if (status === 'IDLE' || status === 'OFFLINE') {
-        session.activeAgents.delete(agentId);
-      } else {
-        session.activeAgents.add(agentId);
-      }
-    }
-
-    // Emit collaboration events for communication lines (specialist agents only)
-    if (!isCea && status === 'THINKING' && event.stream === 'lifecycle' && event.data.phase === 'start') {
-      // Specialist started — draw line from CEA to specialist
-      const color = LINE_COLORS[colorIndex % LINE_COLORS.length];
-      colorIndex++;
-      const collaborationId = `comm-${agentId}-${Date.now()}`;
-      // Track so we can end it later
-      this.activeCollabs.set(agentId, collaborationId);
-      await this.eventBus.publish({
-        id: generateEventId(),
-        agentId: 'cea',
-        runId: generateRunId(),
-        seq: 1,
-        stream: 'collaboration' as EventStream,
-        timestamp: Date.now(),
-        data: {
-          phase: 'start',
-          collaborationId,
-          type: 'parallel',
-          participants: ['cea', agentId],
-          topic: `Delegated to ${roleMeta.name}`,
-          color,
-        },
-      });
-    } else if (!isCea && status === 'IDLE' && event.stream === 'lifecycle' && event.data.phase === 'end') {
-      // Specialist finished — fade line
-      const collaborationId = this.activeCollabs.get(agentId);
-      if (collaborationId) {
-        this.activeCollabs.delete(agentId);
-        await this.eventBus.publish({
-          id: generateEventId(),
-          agentId,
-          runId: generateRunId(),
-          seq: 1,
-          stream: 'collaboration' as EventStream,
-          timestamp: Date.now(),
-          data: {
-            phase: 'end',
-            collaborationId,
-            participants: ['cea', agentId],
-          },
-        });
-      }
-    }
+    // Collaboration lines are now handled by hooks (SubagentStart/Stop)
   }
 
   private mapEventToStatus(event: AgentEvent): AgentStatus | null {
