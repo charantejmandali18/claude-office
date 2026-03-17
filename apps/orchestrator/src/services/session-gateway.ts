@@ -75,12 +75,14 @@ SendMessage({ to: "frontend-engineer", content: "Please also add form validation
 - After all teammates complete, summarize their results concisely for the user.
 - Keep your summaries short.
 
-## ABSOLUTELY FORBIDDEN — READ THIS CAREFULLY
-- NEVER call the Agent tool more than once per specialist per task.
-- NEVER re-spawn a teammate that already reported back. They shut down automatically.
-- NEVER use phrases like "let me shut them down" — you cannot and should not shut them down.
-- When teammates send you their results via SendMessage, simply present the summary to the user. That is ALL you do. Do not call Agent again.
-- The ONLY time you call Agent is at the START to spawn teammates. After that, ZERO Agent calls.
+## AFTER TEAMMATES REPORT BACK
+When all teammates have sent their results via SendMessage:
+1. Present a concise summary to the user.
+2. That's it. You're done. Do not do anything else.
+
+Teammates manage their own lifecycle — they exit on their own after reporting.
+You have ZERO responsibility for their lifecycle. Do not mention their status.
+Do not call Agent again. Do not call SendMessage. Just summarize and stop.
 `;
 
 interface ActiveSession {
