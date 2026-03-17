@@ -12,14 +12,17 @@ const LINE_COLORS = ['#14b8a6', '#f59e0b', '#f43f5e', '#8b5cf6', '#84cc16', '#06
 export class HookReceiver {
   private db: PrismaClient | null = null;
 
-  /** Track active collaborations for line lifecycle */
-  private activeCollabs = new Map<string, string>(); // agentName → collabId
+  /** Track active collaborations for line lifecycle: agentName → collabId */
+  private activeCollabs = new Map<string, string>();
 
-  /** Map internal agent IDs (a080e64ae...) to agent names (github-repos-owner) */
+  /** Map internal agent IDs (a080e64ae...) to names (github-repos-owner) */
   private agentIdToName = new Map<string, string>();
 
-  /** Track agents that have stopped — ignore any late events for them */
-  private stoppedAgents = new Set<string>();
+  /** Agents that have reported back via SendMessage — any re-spawn after this is shutdown noise */
+  private reportedAgents = new Set<string>();
+
+  /** Agents currently in shutdown cycle — ignore all their events */
+  private shutdownAgents = new Set<string>();
 
   private colorIndex = 0;
 
@@ -29,7 +32,6 @@ export class HookReceiver {
     this.db = db;
   }
 
-  /** Returns an HTTP request handler for hook events */
   handler(): (req: http.IncomingMessage, res: http.ServerResponse) => void {
     return (req, res) => {
       if (req.method === 'POST' && req.url === '/hooks/event') {
@@ -61,8 +63,6 @@ export class HookReceiver {
     const agentId = payload.agent_id as string ?? '';
     const toolName = payload.tool_name as string ?? '';
 
-    console.log(`[Hook] ${eventName} | session=${sessionId?.slice(0, 8)} agent=${agentId} tool=${toolName}`);
-
     switch (eventName) {
       case 'SessionStart': {
         const agentType = payload.agent_type as string ?? 'main';
@@ -71,152 +71,97 @@ export class HookReceiver {
       }
 
       case 'SessionEnd': {
-        const reason = payload.reason as string ?? '';
-        console.log(`[Hook] Session ended: ${sessionId?.slice(0, 8)} reason=${reason}`);
-        // Mark all active agents as IDLE and close their lines
-        for (const [agentName, collabId] of this.activeCollabs) {
-          await this.updateAgentStatus(agentName, AgentStatus.IDLE);
-          await this.eventBus.publish({
-            id: generateEventId(),
-            agentId: agentName,
-            runId: generateRunId(),
-            seq: 1,
-            stream: 'collaboration' as EventStream,
-            timestamp: Date.now(),
-            data: { phase: 'end', collaborationId: collabId, participants: ['cea', agentName] },
-          });
-        }
-        this.activeCollabs.clear();
-        this.agentIdToName.clear();
-        this.stoppedAgents.clear();
+        console.log(`[Hook] Session ended: ${sessionId?.slice(0, 8)}`);
+        this.cleanupAll();
         break;
       }
 
       case 'SubagentStart': {
-        // A teammate/subagent process started — this fires for EVERY agent including teammates
         const agentType = payload.agent_type as string ?? '';
-        console.log(`[Hook] 🚀 Subagent START: id=${agentId} type=${agentType} session=${sessionId?.slice(0, 8)}`);
-
-        // Map internal ID → agent name (agent_type has the name like "github-repos-owner")
-        if (agentId && agentType) {
-          this.agentIdToName.set(agentId, agentType);
-          // Clear stopped state in case of re-spawn
-          this.stoppedAgents.delete(agentId);
-          this.stoppedAgents.delete(agentType);
-        }
-
-        // Resolve the display name
         const agentName = agentType || agentId;
 
-        // If this agent is already active (re-spawn), close the old one first
-        if (agentName && this.activeCollabs.has(agentName)) {
-          const oldCollabId = this.activeCollabs.get(agentName)!;
-          this.activeCollabs.delete(agentName);
-          await this.eventBus.publish({
-            id: generateEventId(),
-            agentId: agentName,
-            runId: generateRunId(),
-            seq: 1,
-            stream: 'collaboration' as EventStream,
-            timestamp: Date.now(),
-            data: { phase: 'end', collaborationId: oldCollabId, participants: ['cea', agentName] },
-          });
+        // Map internal ID → name
+        if (agentId && agentType) {
+          this.agentIdToName.set(agentId, agentType);
         }
 
-        // CEA is actively coordinating while teammates work
+        // SHUTDOWN DETECTION: if this agent already reported back, this is a shutdown re-spawn
+        if (agentName && this.reportedAgents.has(agentName)) {
+          this.shutdownAgents.add(agentName);
+          this.shutdownAgents.add(agentId);
+          console.log(`[Hook] ⏭️  Ignoring shutdown re-spawn: ${agentName}`);
+          break; // Don't activate in UI, don't draw lines
+        }
+
+        console.log(`[Hook] 🚀 Subagent START: ${agentName} session=${sessionId?.slice(0, 8)}`);
+
+        // CEA is coordinating while teammates work
         if (this.activeCollabs.size === 0) {
-          // First teammate — CEA transitions from IDLE to THINKING
           await this.updateAgentStatus('cea', AgentStatus.THINKING);
         }
 
-        // If this is a known specialist, activate them in the UI
+        // Activate specialist in UI + draw line
         if (agentName && AGENT_ROLE_MAP.has(agentName)) {
           await this.updateAgentStatus(agentName, AgentStatus.THINKING);
 
-          // Create communication line from CEA to this agent
           const color = LINE_COLORS[this.colorIndex % LINE_COLORS.length];
           this.colorIndex++;
           const collabId = `hook-${agentName}-${Date.now()}`;
           this.activeCollabs.set(agentName, collabId);
 
-          await this.eventBus.publish({
-            id: generateEventId(),
-            agentId: 'cea',
-            runId: generateRunId(),
-            seq: 1,
-            stream: 'collaboration' as EventStream,
-            timestamp: Date.now(),
-            data: {
-              phase: 'start',
-              collaborationId: collabId,
-              type: 'parallel',
-              participants: ['cea', agentName],
-              topic: `Working: ${agentName}`,
-              color,
-            },
-          });
+          await this.emitCollaboration('start', agentName, collabId, color);
         }
         break;
       }
 
       case 'SubagentStop': {
-        // A teammate/subagent process stopped — resolve internal ID to name
         const agentName = this.agentIdToName.get(agentId) ?? agentId;
-        console.log(`[Hook] 🏁 Subagent STOP: id=${agentId} name=${agentName} session=${sessionId?.slice(0, 8)}`);
 
-        // Mark as stopped so late PostToolUse events are ignored
-        this.stoppedAgents.add(agentId);
-        if (agentName) this.stoppedAgents.add(agentName);
+        // If this is a shutdown cycle agent, just clean up silently
+        if (this.shutdownAgents.has(agentId) || this.shutdownAgents.has(agentName)) {
+          console.log(`[Hook] ⏭️  Ignoring shutdown stop: ${agentName}`);
+          this.shutdownAgents.delete(agentId);
+          this.shutdownAgents.delete(agentName);
+          this.agentIdToName.delete(agentId);
+          break;
+        }
+
+        console.log(`[Hook] 🏁 Subagent STOP: ${agentName} session=${sessionId?.slice(0, 8)}`);
 
         if (agentName && AGENT_ROLE_MAP.has(agentName)) {
-          // Debounce ALL state changes by 3s to handle Agent Teams shutdown protocol.
-          // If the agent re-spawns within 3s, stoppedAgents guard prevents IDLE.
-          setTimeout(async () => {
-            if (!this.stoppedAgents.has(agentName)) return; // re-spawned, skip
+          // Set agent IDLE
+          await this.updateAgentStatus(agentName, AgentStatus.IDLE);
 
-            // Set agent IDLE
-            await this.updateAgentStatus(agentName, AgentStatus.IDLE);
+          // End communication line
+          const collabId = this.activeCollabs.get(agentName);
+          if (collabId) {
+            this.activeCollabs.delete(agentName);
+            await this.emitCollaboration('end', agentName, collabId);
+          }
 
-            // End communication line
-            const collabId = this.activeCollabs.get(agentName);
-            if (collabId) {
-              this.activeCollabs.delete(agentName);
-              await this.eventBus.publish({
-                id: generateEventId(),
-                agentId: agentName,
-                runId: generateRunId(),
-                seq: 1,
-                stream: 'collaboration' as EventStream,
-                timestamp: Date.now(),
-                data: {
-                  phase: 'end',
-                  collaborationId: collabId,
-                  participants: ['cea', agentName],
-                },
-              });
-            }
-
-            // If ALL agents are now idle, set CEA to IDLE too
-            if (this.activeCollabs.size === 0) {
-              console.log(`[Hook] All teammates done — setting CEA to IDLE`);
-              await this.updateAgentStatus('cea', AgentStatus.IDLE);
-            }
-          }, 3000);
+          // If ALL agents are now idle, set CEA to IDLE
+          if (this.activeCollabs.size === 0) {
+            console.log(`[Hook] ✅ All teammates done — CEA → IDLE`);
+            await this.updateAgentStatus('cea', AgentStatus.IDLE);
+          }
         }
-        // Clean up ID mapping
+
         this.agentIdToName.delete(agentId);
         break;
       }
 
       case 'PreToolUse': {
-        // Agent is about to use a tool — resolve name and show as TOOL_CALLING
         const resolvedName = this.agentIdToName.get(agentId) ?? agentId;
-        // If no agentId, this is the team lead using a tool
+
+        // Team lead tool use
         if (!agentId && toolName) {
           await this.updateAgentStatus('cea', AgentStatus.TOOL_CALLING);
           break;
         }
-        if (this.stoppedAgents.has(agentId) || this.stoppedAgents.has(resolvedName)) break; // ignore late events
+
+        // Ignore events from shutdown or already-reported agents
+        if (this.isIgnored(agentId, resolvedName)) break;
+
         if (resolvedName && AGENT_ROLE_MAP.has(resolvedName)) {
           await this.updateAgentStatus(resolvedName, AgentStatus.TOOL_CALLING);
           await this.eventBus.publish({
@@ -233,15 +178,17 @@ export class HookReceiver {
       }
 
       case 'PostToolUse': {
-        // Agent finished using a tool — resolve name
         const resolvedName = this.agentIdToName.get(agentId) ?? agentId;
-        // If no agentId, this is the team lead
+
+        // Team lead tool use
         if (!agentId && toolName) {
-          // After team lead uses a tool, set to THINKING (will be set to SPEAKING by assistant messages)
           await this.updateAgentStatus('cea', AgentStatus.THINKING);
           break;
         }
-        if (this.stoppedAgents.has(agentId) || this.stoppedAgents.has(resolvedName)) break; // ignore late events
+
+        // Ignore events from shutdown or already-stopped agents
+        if (this.isIgnored(agentId, resolvedName)) break;
+
         if (resolvedName && AGENT_ROLE_MAP.has(resolvedName)) {
           await this.updateAgentStatus(resolvedName, AgentStatus.THINKING);
           await this.eventBus.publish({
@@ -255,50 +202,90 @@ export class HookReceiver {
           });
         }
 
-        // If the tool is SendMessage, emit a communication event between agents
+        // Detect SendMessage — mark agent as having reported back
         if (toolName === 'SendMessage') {
           const toolInput = payload.tool_input as Record<string, unknown> | undefined;
           const to = (toolInput?.to as string) ?? (toolInput?.recipient as string);
-          const fromName = this.agentIdToName.get(agentId) ?? agentId;
-          if (to && fromName) {
-            console.log(`[Hook] 💬 SendMessage: ${fromName} → ${to}`);
+          if (to && resolvedName) {
+            console.log(`[Hook] 💬 SendMessage: ${resolvedName} → ${to}`);
+            // If sending to team-lead, this agent has reported its results
+            if (to === 'team-lead' || to === 'cea') {
+              this.reportedAgents.add(resolvedName);
+            }
           }
         }
         break;
       }
 
       case 'Stop': {
-        // Main agent turn ended — if no agent_id, this is the team lead stopping
-        // Check if all teammates should be marked idle
         if (!agentId) {
-          console.log(`[Hook] Team lead turn stopped: session=${sessionId?.slice(0, 8)} (${this.activeCollabs.size} active agents)`);
-        } else {
-          console.log(`[Hook] Agent stopped: ${this.agentIdToName.get(agentId) ?? agentId} session=${sessionId?.slice(0, 8)}`);
+          console.log(`[Hook] Team lead turn stopped (${this.activeCollabs.size} active)`);
         }
         break;
       }
 
-      case 'Notification': {
-        const notificationType = payload.notification_type as string ?? '';
-        console.log(`[Hook] Notification: type=${notificationType} session=${sessionId?.slice(0, 8)}`);
-        break;
-      }
-
       case 'UserPromptSubmit': {
-        console.log(`[Hook] User prompt submitted: session=${sessionId?.slice(0, 8)}`);
-        // CEA starts processing — set to THINKING
+        console.log(`[Hook] User prompt submitted`);
+        // Fresh task — reset reported agents tracking
+        this.reportedAgents.clear();
+        this.shutdownAgents.clear();
         await this.updateAgentStatus('cea', AgentStatus.THINKING);
         break;
       }
+
+      case 'Notification':
+        break;
 
       default:
         console.log(`[Hook] Unhandled: ${eventName}`);
     }
   }
 
+  /** Check if events from this agent should be ignored */
+  private isIgnored(agentId: string, resolvedName: string): boolean {
+    return this.shutdownAgents.has(agentId) ||
+           this.shutdownAgents.has(resolvedName);
+  }
+
+  /** Clean up all state (session ended) */
+  private async cleanupAll(): Promise<void> {
+    for (const [agentName, collabId] of this.activeCollabs) {
+      await this.updateAgentStatus(agentName, AgentStatus.IDLE);
+      await this.emitCollaboration('end', agentName, collabId);
+    }
+    await this.updateAgentStatus('cea', AgentStatus.IDLE);
+    this.activeCollabs.clear();
+    this.agentIdToName.clear();
+    this.reportedAgents.clear();
+    this.shutdownAgents.clear();
+  }
+
+  /** Emit a collaboration line event */
+  private async emitCollaboration(
+    phase: 'start' | 'end',
+    agentName: string,
+    collabId: string,
+    color?: string,
+  ): Promise<void> {
+    await this.eventBus.publish({
+      id: generateEventId(),
+      agentId: phase === 'start' ? 'cea' : agentName,
+      runId: generateRunId(),
+      seq: 1,
+      stream: 'collaboration' as EventStream,
+      timestamp: Date.now(),
+      data: {
+        phase,
+        collaborationId: collabId,
+        ...(phase === 'start' ? { type: 'parallel', topic: `Working: ${agentName}`, color } : {}),
+        participants: ['cea', agentName],
+      },
+    });
+  }
+
   /** Update agent status in DB and broadcast via WebSocket */
   private async updateAgentStatus(agentId: string, status: AgentStatus): Promise<void> {
-    console.log(`[Hook] 📡 Status update: ${agentId} → ${status}`);
+    console.log(`[Hook] 📡 ${agentId} → ${status}`);
     if (this.db) {
       const roleMeta = AGENT_ROLE_MAP.get(agentId);
       if (roleMeta) {
@@ -319,7 +306,6 @@ export class HookReceiver {
         }
       }
     }
-    // Publish as a lifecycle event on the global channel so WebSocket picks it up
     const phase = status === AgentStatus.IDLE ? 'end' : status === AgentStatus.THINKING ? 'thinking' : 'start';
     await this.eventBus.publish({
       id: generateEventId(),

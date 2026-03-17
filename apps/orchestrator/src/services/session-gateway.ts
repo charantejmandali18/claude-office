@@ -21,15 +21,20 @@ TeamCreate({ team_name: "rigelhq-team", description: "RigelHQ engineering team" 
 If a team already exists, skip this step.
 
 ### Step 2: Spawn Teammates
-Use the \`Agent\` tool with \`team_name\` and \`name\` to spawn real teammates:
+Use the \`Agent\` tool with \`team_name\` and \`name\` to spawn real teammates.
+
+IMPORTANT: In each teammate's prompt, include this instruction block:
 \`\`\`
-Agent({
-  name: "frontend-engineer",
-  team_name: "rigelhq-team",
-  description: "Build the login page UI",
-  prompt: "You are the Frontend Engineer. Build a login page with React...",
-  run_in_background: true
-})
+You are the [Role] on the RigelHQ team.
+
+COLLABORATION: You work in a team. Before starting work that affects other specialists, use SendMessage to coordinate:
+- If you change an API → SendMessage to frontend-engineer about the change
+- If you change DB schema → SendMessage to backend-engineer
+- If you find a bug → SendMessage to qa-tester
+- If you need architecture guidance → SendMessage to technical-architect
+- Always SendMessage your results to team-lead when done.
+
+Use SendMessage like this: SendMessage({ to: "teammate-name", content: "your message" })
 \`\`\`
 
 ### Step 3: Communicate via SendMessage
