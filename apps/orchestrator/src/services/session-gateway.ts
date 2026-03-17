@@ -116,25 +116,13 @@ export class SessionGateway {
     const handle = await this.adapter.createSession(
       configId,
       initialPrompt,
-      {},  // No predefined agents — team lead uses TeamCreate + Agent with team_name
       onEvent,
       {
         systemPrompt: TEAM_LEAD_SYSTEM_PROMPT,
-        agentProgressSummaries: true,
       },
     );
 
-    // Wait briefly for session ID to be populated from the init message
-    const waitForSession = async (): Promise<string> => {
-      for (let i = 0; i < 50; i++) {
-        if (handle.sessionId) return handle.sessionId;
-        await new Promise(r => setTimeout(r, 100));
-      }
-      // Fallback: generate a temporary session ID
-      return `pending-${Date.now()}`;
-    };
-    const sessionId = await waitForSession();
-    handle.sessionId = sessionId;
+    const sessionId = handle.sessionId || `pending-${Date.now()}`;
 
     const session: ActiveSession = {
       handle,
@@ -168,16 +156,13 @@ export class SessionGateway {
 
     console.log(`[SessionGW] Sending message to ${sessionId}: ${message.slice(0, 80)}...`);
 
-    const onEvent = async (event: AgentEvent) => {
-      await this.handleEvent(event);
-    };
-
     await this.db.session.update({
       where: { sessionId },
       data: { status: 'ACTIVE' },
     });
 
-    await this.adapter.resumeSession(session.handle, message, onEvent);
+    // V2 sessions are persistent — just send the message, stream is already running
+    await session.handle.send(message);
     this.resetIdleTimer(sessionId);
   }
 
@@ -205,7 +190,7 @@ export class SessionGateway {
     if (!session) return;
 
     this.clearIdleTimer(sessionId);
-    await this.adapter.stop(session.handle);
+    await session.handle.close();
     this.sessions.delete(sessionId);
 
     // Clean up configToSession reverse-lookup entries for this session
@@ -373,11 +358,11 @@ export class SessionGateway {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     console.log(`[SessionGW] Hibernating session: ${sessionId}`);
-    await this.adapter.stop(session.handle);
+    await session.handle.close();
+    this.sessions.delete(sessionId);
     await this.db.session.update({
       where: { sessionId },
       data: { status: 'IDLE' },
     });
-    // Keep in sessions map so it can be resumed
   }
 }
