@@ -295,6 +295,8 @@ export class ClaudeAdapter implements GatewayAdapter {
       }
     } else if (type === 'result') {
       console.log(`[Claude] Result: ${msg.subtype} (${cli.activeTeammates.size} active teammates)`);
+      // Team lead turn ended — set CEA to IDLE
+      await emit('lifecycle', { phase: 'end' });
       // If teammates are still active, start polling for their completion
       if (cli.activeTeammates.size > 0 && !cli.pollingForCompletion) {
         cli.pollingForCompletion = true;

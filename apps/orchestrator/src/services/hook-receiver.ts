@@ -15,6 +15,9 @@ const activeCollabs = new Map<string, string>(); // agentName → collabId
 /** Map internal agent IDs (a080e64ae...) to agent names (github-repos-owner) */
 const agentIdToName = new Map<string, string>();
 
+/** Track agents that have stopped — ignore any late events for them */
+const stoppedAgents = new Set<string>();
+
 export class HookReceiver {
   private db: PrismaClient | null = null;
 
@@ -83,6 +86,7 @@ export class HookReceiver {
         }
         activeCollabs.clear();
         agentIdToName.clear();
+        stoppedAgents.clear();
         break;
       }
 
@@ -94,6 +98,9 @@ export class HookReceiver {
         // Map internal ID → agent name (agent_type has the name like "github-repos-owner")
         if (agentId && agentType) {
           agentIdToName.set(agentId, agentType);
+          // Clear stopped state in case of re-spawn
+          stoppedAgents.delete(agentId);
+          stoppedAgents.delete(agentType);
         }
 
         // Resolve the display name
@@ -149,6 +156,10 @@ export class HookReceiver {
         const agentName = agentIdToName.get(agentId) ?? agentId;
         console.log(`[Hook] 🏁 Subagent STOP: id=${agentId} name=${agentName} session=${sessionId?.slice(0, 8)}`);
 
+        // Mark as stopped so late PostToolUse events are ignored
+        stoppedAgents.add(agentId);
+        if (agentName) stoppedAgents.add(agentName);
+
         if (agentName && AGENT_ROLE_MAP.has(agentName)) {
           await this.updateAgentStatus(agentName, 'IDLE');
 
@@ -179,6 +190,7 @@ export class HookReceiver {
       case 'PreToolUse': {
         // Agent is about to use a tool — resolve name and show as TOOL_CALLING
         const resolvedName = agentIdToName.get(agentId) ?? agentId;
+        if (stoppedAgents.has(agentId) || stoppedAgents.has(resolvedName)) break; // ignore late events
         if (resolvedName && AGENT_ROLE_MAP.has(resolvedName)) {
           await this.updateAgentStatus(resolvedName, 'TOOL_CALLING');
           await this.eventBus.publish({
@@ -197,6 +209,7 @@ export class HookReceiver {
       case 'PostToolUse': {
         // Agent finished using a tool — resolve name
         const resolvedName = agentIdToName.get(agentId) ?? agentId;
+        if (stoppedAgents.has(agentId) || stoppedAgents.has(resolvedName)) break; // ignore late events
         if (resolvedName && AGENT_ROLE_MAP.has(resolvedName)) {
           await this.updateAgentStatus(resolvedName, 'THINKING');
           await this.eventBus.publish({
