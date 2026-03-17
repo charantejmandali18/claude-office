@@ -11,6 +11,8 @@ interface ActiveCLI {
   sessionId: string;
   onEvent: AgentEventCallback;
   emit: (stream: EventStream, data: AgentEvent['data'], agentId?: string) => Promise<void>;
+  /** Active teammate agent IDs that haven't completed yet */
+  activeTeammates: Set<string>;
 }
 
 export class ClaudeAdapter implements GatewayAdapter {
@@ -67,7 +69,6 @@ export class ClaudeAdapter implements GatewayAdapter {
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--dangerously-skip-permissions',
-      '--replay-user-messages',
     ], {
       env: {
         ...process.env,
@@ -79,7 +80,7 @@ export class ClaudeAdapter implements GatewayAdapter {
 
     console.log(`[Claude] CLI spawned for ${configId} (PID: ${proc.pid})`);
 
-    const cli: ActiveCLI = { proc, configId, sessionId: '', onEvent, emit };
+    const cli: ActiveCLI = { proc, configId, sessionId: '', onEvent, emit, activeTeammates: new Set() };
 
     // Parse stdout JSON lines
     let buffer = '';
@@ -110,6 +111,14 @@ export class ClaudeAdapter implements GatewayAdapter {
 
     proc.on('close', (code) => {
       console.log(`[Claude] CLI process for ${configId} exited (code: ${code})`);
+      // Mark any still-active teammates as completed
+      if (cli.activeTeammates.size > 0) {
+        console.log(`[Claude] Marking ${cli.activeTeammates.size} teammates as completed on exit`);
+        for (const name of cli.activeTeammates) {
+          emit('lifecycle', { phase: 'end' }, name).catch(() => {});
+        }
+        cli.activeTeammates.clear();
+      }
       this.cliProcesses.delete(configId);
       emit('lifecycle', { phase: 'end' }).catch(() => {});
     });
@@ -172,6 +181,11 @@ export class ClaudeAdapter implements GatewayAdapter {
     cli: ActiveCLI,
   ): Promise<void> {
     const type = msg.type as string;
+    const subtype = (msg.subtype as string) ?? '';
+    // Log every message type for debugging
+    if (type !== 'user' || (msg.tool_use_result as Record<string, unknown>)) {
+      console.log(`[Claude] MSG: type=${type} subtype=${subtype} parent_tool_use_id=${msg.parent_tool_use_id ?? 'none'}`);
+    }
 
     if (type === 'system') {
       const subtype = msg.subtype as string;
@@ -262,12 +276,39 @@ export class ClaudeAdapter implements GatewayAdapter {
       console.log(`[Claude] Result: ${msg.subtype} (session stays alive for teammates)`);
       // Don't emit lifecycle:end — the CLI process stays alive for teammates
     } else if (type === 'user') {
-      // Tool results / user messages — check for teammate spawn confirmations
+      // Tool results / user messages — check for teammate events
       const toolResult = msg.tool_use_result as Record<string, unknown> | undefined;
       if (toolResult?.status === 'teammate_spawned') {
         const name = toolResult.name as string;
         const teamName = toolResult.team_name as string;
-        console.log(`[Claude] Teammate confirmed: ${name}@${teamName}`);
+        cli.activeTeammates.add(name);
+        console.log(`[Claude] Teammate confirmed: ${name}@${teamName} (${cli.activeTeammates.size} active)`);
+      } else if (toolResult?.status === 'completed') {
+        // Teammate completed — the tool_result comes back with the agent's output
+        const agentId = toolResult.agentId as string | undefined;
+        const toolUseId = msg.message as Record<string, unknown>;
+        const content = toolUseId?.content as Array<Record<string, unknown>>;
+
+        // Try to find which agent this belongs to from the tool_use_id
+        let resolvedAgent: string | undefined;
+        if (content) {
+          for (const block of content) {
+            const tuId = block.tool_use_id as string | undefined;
+            if (tuId && this.toolUseToAgent.has(tuId)) {
+              resolvedAgent = this.toolUseToAgent.get(tuId);
+              break;
+            }
+          }
+        }
+
+        if (resolvedAgent) {
+          cli.activeTeammates.delete(resolvedAgent);
+          console.log(`[Claude] Teammate completed: ${resolvedAgent} (${cli.activeTeammates.size} remaining)`);
+          await emit('lifecycle', { phase: 'end' }, resolvedAgent);
+        } else if (agentId) {
+          // Try to match agentId format like "a1234..." to a name
+          console.log(`[Claude] Tool result completed: agentId=${agentId}`);
+        }
       }
     }
   }
