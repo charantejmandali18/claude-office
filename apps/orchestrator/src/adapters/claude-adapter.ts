@@ -66,10 +66,11 @@ export class ClaudeAdapter implements GatewayAdapter {
 
     // Spawn Claude CLI in interactive mode with bidirectional JSON streaming
     // NOT using --print so the session stays alive for teammate events
-    // cwd MUST be the project root (where .claude/settings.json lives) so hooks are loaded
-    // Resolve from orchestrator dir (apps/orchestrator/) up to project root
-    const path = await import('path');
-    const projectDir = options?.cwd ?? path.resolve(process.cwd(), '..', '..');
+    // CWD is the user's projects root — NOT scoped to any specific project.
+    // Hooks are loaded from global ~/.claude/settings.json.
+    // The team lead tells each teammate which project directory to cd into.
+    const homeDir = process.env.HOME ?? '/Users/charantej';
+    const globalCwd = options?.cwd ?? `${homeDir}/charan_personal_projects`;
     const proc = spawn('claude', [
       '--verbose',
       '--output-format', 'stream-json',
@@ -80,7 +81,7 @@ export class ClaudeAdapter implements GatewayAdapter {
         ...process.env,
         CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
       },
-      cwd: options?.cwd ?? projectDir,
+      cwd: globalCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
