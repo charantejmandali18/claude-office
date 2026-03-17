@@ -12,17 +12,20 @@ const LINE_COLORS = ['#14b8a6', '#f59e0b', '#f43f5e', '#8b5cf6', '#84cc16', '#06
 export class HookReceiver {
   private db: PrismaClient | null = null;
 
-  /** Track active collaborations for line lifecycle: agentName → collabId */
+  /** Track active CEA→specialist collaborations: agentName → collabId */
   private activeCollabs = new Map<string, string>();
+
+  /** Track active specialist↔specialist collaborations: "agentA↔agentB" → collabId */
+  private peerCollabs = new Map<string, string>();
 
   /** Map internal agent IDs (a080e64ae...) to names (github-repos-owner) */
   private agentIdToName = new Map<string, string>();
 
-  /** Agents that have reported back via SendMessage — any re-spawn after this is shutdown noise */
-  private reportedAgents = new Set<string>();
+  /** Agents that have been stopped (SubagentStop received) — re-spawn after stop = shutdown noise */
+  private stoppedAgents = new Set<string>();
 
-  /** Agents currently in shutdown cycle — ignore all their events */
-  private shutdownAgents = new Set<string>();
+  /** Track which agents are currently active (between SubagentStart and SubagentStop) */
+  private activeAgents = new Set<string>();
 
   private colorIndex = 0;
 
@@ -72,7 +75,7 @@ export class HookReceiver {
 
       case 'SessionEnd': {
         console.log(`[Hook] Session ended: ${sessionId?.slice(0, 8)}`);
-        this.cleanupAll();
+        await this.cleanupAll();
         break;
       }
 
@@ -85,22 +88,22 @@ export class HookReceiver {
           this.agentIdToName.set(agentId, agentType);
         }
 
-        // SHUTDOWN DETECTION: if this agent already reported back, this is a shutdown re-spawn
-        if (agentName && this.reportedAgents.has(agentName)) {
-          this.shutdownAgents.add(agentName);
-          this.shutdownAgents.add(agentId);
+        // FIX #1: SHUTDOWN RE-SPAWN DETECTION
+        // If this agent was already stopped in this task cycle, this is a re-spawn for shutdown.
+        // The team lead is re-spawning it just to shut it down — ignore completely.
+        if (agentName && this.stoppedAgents.has(agentName)) {
           console.log(`[Hook] ⏭️  Ignoring shutdown re-spawn: ${agentName}`);
-          break; // Don't activate in UI, don't draw lines
+          break;
         }
 
         console.log(`[Hook] 🚀 Subagent START: ${agentName} session=${sessionId?.slice(0, 8)}`);
 
-        // CEA is coordinating while teammates work
-        if (this.activeCollabs.size === 0) {
-          await this.updateAgentStatus('cea', AgentStatus.THINKING);
-        }
+        this.activeAgents.add(agentName);
 
-        // Activate specialist in UI + draw line
+        // CEA is coordinating while teammates work
+        await this.updateAgentStatus('cea', AgentStatus.THINKING);
+
+        // Activate specialist in UI + draw CEA→specialist line
         if (agentName && AGENT_ROLE_MAP.has(agentName)) {
           await this.updateAgentStatus(agentName, AgentStatus.THINKING);
 
@@ -109,7 +112,7 @@ export class HookReceiver {
           const collabId = `hook-${agentName}-${Date.now()}`;
           this.activeCollabs.set(agentName, collabId);
 
-          await this.emitCollaboration('start', agentName, collabId, color);
+          await this.emitCollaboration('start', 'cea', agentName, collabId, color);
         }
         break;
       }
@@ -117,32 +120,48 @@ export class HookReceiver {
       case 'SubagentStop': {
         const agentName = this.agentIdToName.get(agentId) ?? agentId;
 
-        // If this is a shutdown cycle agent, just clean up silently
-        if (this.shutdownAgents.has(agentId) || this.shutdownAgents.has(agentName)) {
+        // If this was a shutdown re-spawn (agent already stopped), ignore silently
+        if (agentName && this.stoppedAgents.has(agentName)) {
           console.log(`[Hook] ⏭️  Ignoring shutdown stop: ${agentName}`);
-          this.shutdownAgents.delete(agentId);
-          this.shutdownAgents.delete(agentName);
           this.agentIdToName.delete(agentId);
           break;
         }
 
         console.log(`[Hook] 🏁 Subagent STOP: ${agentName} session=${sessionId?.slice(0, 8)}`);
 
+        // Mark as stopped so any re-spawn is detected as shutdown noise
+        this.stoppedAgents.add(agentName);
+        this.activeAgents.delete(agentName);
+
         if (agentName && AGENT_ROLE_MAP.has(agentName)) {
-          // Set agent IDLE
+          // FIX #2: Set agent IDLE and end ALL lines involving this agent
           await this.updateAgentStatus(agentName, AgentStatus.IDLE);
 
-          // End communication line
+          // End CEA→specialist line
           const collabId = this.activeCollabs.get(agentName);
           if (collabId) {
             this.activeCollabs.delete(agentName);
-            await this.emitCollaboration('end', agentName, collabId);
+            await this.emitCollaboration('end', 'cea', agentName, collabId);
           }
 
-          // If ALL agents are now idle, set CEA to IDLE
-          if (this.activeCollabs.size === 0) {
+          // End any peer lines involving this agent
+          for (const [key, peerCollabId] of this.peerCollabs) {
+            if (key.includes(agentName)) {
+              this.peerCollabs.delete(key);
+              const [a, b] = key.split('↔');
+              await this.emitCollaboration('end', a, b, peerCollabId);
+            }
+          }
+
+          // If ALL agents are now idle, set CEA to IDLE too
+          if (this.activeAgents.size === 0) {
             console.log(`[Hook] ✅ All teammates done — CEA → IDLE`);
             await this.updateAgentStatus('cea', AgentStatus.IDLE);
+            // Also clean up any orphaned collabs
+            for (const [name, cid] of this.activeCollabs) {
+              await this.emitCollaboration('end', 'cea', name, cid);
+            }
+            this.activeCollabs.clear();
           }
         }
 
@@ -159,8 +178,8 @@ export class HookReceiver {
           break;
         }
 
-        // Ignore events from shutdown or already-reported agents
-        if (this.isIgnored(agentId, resolvedName)) break;
+        // Ignore events from stopped agents (shutdown re-spawn)
+        if (this.stoppedAgents.has(resolvedName)) break;
 
         if (resolvedName && AGENT_ROLE_MAP.has(resolvedName)) {
           await this.updateAgentStatus(resolvedName, AgentStatus.TOOL_CALLING);
@@ -186,8 +205,8 @@ export class HookReceiver {
           break;
         }
 
-        // Ignore events from shutdown or already-stopped agents
-        if (this.isIgnored(agentId, resolvedName)) break;
+        // Ignore events from stopped agents (shutdown re-spawn)
+        if (this.stoppedAgents.has(resolvedName)) break;
 
         if (resolvedName && AGENT_ROLE_MAP.has(resolvedName)) {
           await this.updateAgentStatus(resolvedName, AgentStatus.THINKING);
@@ -202,15 +221,27 @@ export class HookReceiver {
           });
         }
 
-        // Detect SendMessage — mark agent as having reported back
-        if (toolName === 'SendMessage') {
+        // FIX #3: INTER-AGENT COMMUNICATION VISUALIZATION
+        if (toolName === 'SendMessage' && resolvedName) {
           const toolInput = payload.tool_input as Record<string, unknown> | undefined;
           const to = (toolInput?.to as string) ?? (toolInput?.recipient as string);
-          if (to && resolvedName) {
+          if (to) {
             console.log(`[Hook] 💬 SendMessage: ${resolvedName} → ${to}`);
-            // If sending to team-lead, this agent has reported its results
-            if (to === 'team-lead' || to === 'cea') {
-              this.reportedAgents.add(resolvedName);
+
+            // Draw a peer-to-peer line between the two specialists (skip team-lead messages)
+            if (to !== 'team-lead' && to !== 'cea' && AGENT_ROLE_MAP.has(to)) {
+              const peerKey = [resolvedName, to].sort().join('↔');
+              if (!this.peerCollabs.has(peerKey)) {
+                const color = LINE_COLORS[this.colorIndex % LINE_COLORS.length];
+                this.colorIndex++;
+                const peerCollabId = `peer-${peerKey}-${Date.now()}`;
+                this.peerCollabs.set(peerKey, peerCollabId);
+                await this.emitCollaboration('start', resolvedName, to, peerCollabId, color);
+              }
+
+              // Emit a message event on the existing line for speech bubbles
+              const peerCollabId = this.peerCollabs.get(peerKey)!;
+              await this.emitCollaborationMessage(resolvedName, to, peerCollabId);
             }
           }
         }
@@ -219,16 +250,17 @@ export class HookReceiver {
 
       case 'Stop': {
         if (!agentId) {
-          console.log(`[Hook] Team lead turn stopped (${this.activeCollabs.size} active)`);
+          console.log(`[Hook] Team lead turn stopped (${this.activeAgents.size} active agents)`);
         }
         break;
       }
 
       case 'UserPromptSubmit': {
         console.log(`[Hook] User prompt submitted`);
-        // Fresh task — reset reported agents tracking
-        this.reportedAgents.clear();
-        this.shutdownAgents.clear();
+        // Fresh task — reset all tracking
+        this.stoppedAgents.clear();
+        this.activeAgents.clear();
+        this.colorIndex = 0;
         await this.updateAgentStatus('cea', AgentStatus.THINKING);
         break;
       }
@@ -241,35 +273,39 @@ export class HookReceiver {
     }
   }
 
-  /** Check if events from this agent should be ignored */
-  private isIgnored(agentId: string, resolvedName: string): boolean {
-    return this.shutdownAgents.has(agentId) ||
-           this.shutdownAgents.has(resolvedName);
-  }
-
   /** Clean up all state (session ended) */
   private async cleanupAll(): Promise<void> {
+    // End all CEA→specialist lines
     for (const [agentName, collabId] of this.activeCollabs) {
       await this.updateAgentStatus(agentName, AgentStatus.IDLE);
-      await this.emitCollaboration('end', agentName, collabId);
+      await this.emitCollaboration('end', 'cea', agentName, collabId);
+    }
+    // End all peer lines
+    for (const [key, collabId] of this.peerCollabs) {
+      const [a, b] = key.split('↔');
+      await this.emitCollaboration('end', a, b, collabId);
     }
     await this.updateAgentStatus('cea', AgentStatus.IDLE);
     this.activeCollabs.clear();
+    this.peerCollabs.clear();
     this.agentIdToName.clear();
-    this.reportedAgents.clear();
-    this.shutdownAgents.clear();
+    this.stoppedAgents.clear();
+    this.activeAgents.clear();
+    this.colorIndex = 0;
   }
 
-  /** Emit a collaboration line event */
+  /** Emit a collaboration line event (start or end) */
   private async emitCollaboration(
     phase: 'start' | 'end',
-    agentName: string,
+    from: string,
+    to: string,
     collabId: string,
     color?: string,
   ): Promise<void> {
+    const isPeer = from !== 'cea' && to !== 'cea';
     await this.eventBus.publish({
       id: generateEventId(),
-      agentId: phase === 'start' ? 'cea' : agentName,
+      agentId: from,
       runId: generateRunId(),
       seq: 1,
       stream: 'collaboration' as EventStream,
@@ -277,8 +313,35 @@ export class HookReceiver {
       data: {
         phase,
         collaborationId: collabId,
-        ...(phase === 'start' ? { type: 'parallel', topic: `Working: ${agentName}`, color } : {}),
-        participants: ['cea', agentName],
+        ...(phase === 'start' ? {
+          type: isPeer ? 'peer' : 'parallel',
+          topic: isPeer ? `${from} ↔ ${to}` : `Working: ${to}`,
+          color,
+        } : {}),
+        participants: [from, to],
+      },
+    });
+  }
+
+  /** Emit a message event on an existing collaboration (for speech bubbles) */
+  private async emitCollaborationMessage(
+    from: string,
+    to: string,
+    collabId: string,
+  ): Promise<void> {
+    await this.eventBus.publish({
+      id: generateEventId(),
+      agentId: from,
+      runId: generateRunId(),
+      seq: 1,
+      stream: 'collaboration' as EventStream,
+      timestamp: Date.now(),
+      data: {
+        phase: 'message',
+        collaborationId: collabId,
+        fromAgent: from,
+        toAgent: to,
+        participants: [from, to],
       },
     });
   }

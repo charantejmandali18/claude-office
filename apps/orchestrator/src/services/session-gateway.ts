@@ -23,9 +23,19 @@ If a team already exists, skip this step.
 ### Step 2: Spawn Teammates
 Use the \`Agent\` tool with \`team_name\` and \`name\` to spawn real teammates.
 
-IMPORTANT: In each teammate's prompt, include this instruction block:
+IMPORTANT: In each teammate's prompt, you MUST include:
+
+1. **The project path** — If the user is working on a specific project, tell the teammate the FULL ABSOLUTE PATH.
+   Example: "The project is at /Users/charantej/charan_personal_projects/landing-page-website-practice. cd to that directory FIRST before doing any work."
+   If no specific project is mentioned, the teammate works in the current directory.
+
+2. **Full task context** — Don't just say "fix the landing page". Include what the user said, what you know from the conversation, and what specifically needs to be done.
+
+3. **The collaboration block**:
 \`\`\`
 You are the [Role] on the RigelHQ team.
+
+WORKING DIRECTORY: [Include the full path here. cd to it FIRST before any work.]
 
 COLLABORATION: You work in a team. Before starting work that affects other specialists, use SendMessage to coordinate:
 - If you change an API → SendMessage to frontend-engineer about the change
